@@ -1,15 +1,6 @@
 ﻿package com.shivam.vanshavali.ui
 
-import android.content.ContentValues
-import android.content.Context
 import android.content.Intent
-import android.graphics.Bitmap
-import android.graphics.Paint
-import android.graphics.Typeface
-import android.net.Uri
-import android.os.Build
-import android.os.Environment
-import android.provider.MediaStore
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
@@ -17,27 +8,21 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.ArrowRight
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.*
-import androidx.compose.ui.graphics.drawscope.DrawScope
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
@@ -47,46 +32,37 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
-import androidx.core.content.FileProvider
 import com.shivam.vanshavali.data.TranslationHelper
 import com.shivam.vanshavali.model.PersonNode
 import com.shivam.vanshavali.model.SavedFamilyTree
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
-import java.io.File
-import java.io.FileOutputStream
-import java.io.OutputStream
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
 
-private const val CIRCLE_RADIUS = 18f
-private const val NODE_BOX_WIDTH = 64f
-private const val LEVEL_HEIGHT = 100f
-private const val SIBLING_DISTANCE = 74f
+// Calculates total depth of the tree
+private fun getMaxTreeDepth(node: PersonNode, currentDepth: Int = 0): Int {
+    if (node.children.isEmpty()) return currentDepth
+    return node.children.maxOf { getMaxTreeDepth(it, currentDepth + 1) }
+}
 
-private val GenerationColors = listOf(
-    Color(0xFF00BFA5),
-    Color(0xFFFFA000),
-    Color(0xFF7E57C2),
-    Color(0xFFEC407A),
-    Color(0xFF26A69A),
-    Color(0xFF5C6BC0)
-)
-
-data class RenderableNode(
-    val node: PersonNode,
-    val x: Float,
-    val y: Float,
-    val depth: Int,
-    val children: List<RenderableNode>
-)
+// Expands nodes up to targetLevel and collapses deeper nodes
+private fun applyLevelExpansion(
+    node: PersonNode,
+    targetLevel: Int,
+    currentDepth: Int,
+    collapsedMap: MutableMap<String, Boolean>
+) {
+    if (node.children.isNotEmpty()) {
+        collapsedMap[node.id] = currentDepth >= targetLevel
+        node.children.forEach { child ->
+            applyLevelExpansion(child, targetLevel, currentDepth + 1, collapsedMap)
+        }
+    }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -101,19 +77,25 @@ fun FamilyTreeViewerScreen(
     val collapsedIds = remember { mutableStateMapOf<String, Boolean>() }
     var selectedPersonId by remember { mutableStateOf<String?>(tree.root.id) }
 
+    // Mode Toggle: Defaults to Hierarchy View
+    var isHierarchyView by remember { mutableStateOf(true) }
+    var showLevelSelector by remember { mutableStateOf(false) }
+
     var currentRootNode by remember(tree) { mutableStateOf(tree.root) }
     var isHindiActive by remember { mutableStateOf(false) }
     var isTranslating by remember { mutableStateOf(false) }
 
+    val maxDepth = remember(currentRootNode) { getMaxTreeDepth(currentRootNode) }
+
+    // Canvas States
     var scale by remember { mutableFloatStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
     var isInteracting by remember { mutableStateOf(false) }
     var hasAutoCentered by remember { mutableStateOf(false) }
+    var canvasSize by remember { mutableStateOf(IntSize.Zero) }
 
     var showMenu by remember { mutableStateOf(false) }
     var showPrintDialog by remember { mutableStateOf(false) }
-    var showHierarchyDialog by remember { mutableStateOf(false) }
-    var canvasSize by remember { mutableStateOf(IntSize.Zero) }
 
     LaunchedEffect(isInteracting) {
         if (isInteracting) {
@@ -168,6 +150,12 @@ fun FamilyTreeViewerScreen(
                 },
                 actions = {
                     ActionIconButtonWithTooltip(
+                        tooltipText = if (isHierarchyView) "Switch to Diagram View" else "Switch to Hierarchy View",
+                        icon = if (isHierarchyView) Icons.Default.AccountTree else Icons.Default.ViewList,
+                        onClick = { isHierarchyView = !isHierarchyView }
+                    )
+
+                    ActionIconButtonWithTooltip(
                         tooltipText = if (isHindiActive) "Switch to English" else "Translate to Hindi",
                         icon = Icons.Default.Translate,
                         enabled = !isTranslating,
@@ -199,11 +187,11 @@ fun FamilyTreeViewerScreen(
                         onDismissRequest = { showMenu = false }
                     ) {
                         DropdownMenuItem(
-                            text = { Text("See family tree as hierarchy") },
-                            leadingIcon = { Icon(Icons.Default.AccountTree, contentDescription = null) },
+                            text = { Text(if (isHierarchyView) "View as Diagram" else "View as Hierarchy") },
+                            leadingIcon = { Icon(if (isHierarchyView) Icons.Default.AccountTree else Icons.Default.ViewList, contentDescription = null) },
                             onClick = {
                                 showMenu = false
-                                showHierarchyDialog = true
+                                isHierarchyView = !isHierarchyView
                             }
                         )
                         DropdownMenuItem(
@@ -226,7 +214,7 @@ fun FamilyTreeViewerScreen(
                             onClick = {
                                 showMenu = false
                                 scope.launch {
-                                    downloadJsonFile(context, tree.title, Json { prettyPrint = true }.encodeToString(currentRootNode))
+                                    TreeExportHelper.downloadJsonFile(context, tree.title, Json { prettyPrint = true }.encodeToString(currentRootNode))
                                 }
                             }
                         )
@@ -250,57 +238,102 @@ fun FamilyTreeViewerScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .background(Color(0xFFFBFBFB))
-                .onSizeChanged { canvasSize = it }
-                .pointerInput(Unit) {
-                    detectTransformGestures { _, pan, zoom, _ ->
-                        scale = (scale * zoom).coerceIn(0.12f, 3.5f)
-                        offset += pan
-                        isInteracting = true
-                    }
-                }
-                .pointerInput(staticLayoutRoot, scale, offset) {
-                    detectTapGestures { tapOffset ->
-                        fun checkHit(node: RenderableNode): Boolean {
-                            val screenCenterX = node.x * scale + offset.x
-                            val screenCenterY = (node.y + CIRCLE_RADIUS) * scale + offset.y
-                            val hitRadius = (CIRCLE_RADIUS + 14f) * scale
-
-                            val dx = tapOffset.x - screenCenterX
-                            val dy = tapOffset.y - screenCenterY
-                            if (dx * dx + dy * dy <= hitRadius * hitRadius) {
-                                selectedPersonId = node.node.id
-                                if (node.node.children.isNotEmpty()) {
-                                    val isCollapsed = collapsedIds[node.node.id] == true
-                                    collapsedIds[node.node.id] = !isCollapsed
-                                }
-                                return true
-                            }
-                            val isNodeCollapsed = collapsedIds[node.node.id] == true
-                            if (!isNodeCollapsed) {
-                                return node.children.any { checkHit(it) }
-                            }
-                            return false
-                        }
-                        checkHit(staticLayoutRoot)
-                    }
-                }
         ) {
-            val wireColor = Color(0xFF90A4AE)
-
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                drawTreeOnCanvas(
-                    scope = this,
-                    root = staticLayoutRoot,
-                    scale = scale,
-                    offset = offset,
-                    wireColor = wireColor,
+            if (isHierarchyView) {
+                HierarchyTreeList(
+                    rootNode = currentRootNode,
                     collapsedIds = collapsedIds,
-                    selectedPersonId = selectedPersonId
+                    selectedPersonId = selectedPersonId,
+                    onNodeClick = { clicked ->
+                        selectedPersonId = clicked.id
+                        if (clicked.children.isNotEmpty()) {
+                            val isCollapsed = collapsedIds[clicked.id] == true
+                            collapsedIds[clicked.id] = !isCollapsed
+                        }
+                    },
+                    onToggleCollapse = { id ->
+                        val isCollapsed = collapsedIds[id] == true
+                        collapsedIds[id] = !isCollapsed
+                    }
                 )
+            } else {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color(0xFFFBFBFB))
+                        .onSizeChanged { canvasSize = it }
+                        .pointerInput(Unit) {
+                            detectTransformGestures { _, pan, zoom, _ ->
+                                scale = (scale * zoom).coerceIn(0.12f, 3.5f)
+                                offset += pan
+                                isInteracting = true
+                            }
+                        }
+                        .pointerInput(staticLayoutRoot, scale, offset) {
+                            detectTapGestures { tapOffset ->
+                                fun checkHit(node: RenderableNode): Boolean {
+                                    val screenCenterX = node.x * scale + offset.x
+                                    val screenCenterY = (node.y + CIRCLE_RADIUS) * scale + offset.y
+                                    val hitRadius = (CIRCLE_RADIUS + 14f) * scale
+
+                                    val dx = tapOffset.x - screenCenterX
+                                    val dy = tapOffset.y - screenCenterY
+                                    if (dx * dx + dy * dy <= hitRadius * hitRadius) {
+                                        selectedPersonId = node.node.id
+                                        if (node.node.children.isNotEmpty()) {
+                                            val isCollapsed = collapsedIds[node.node.id] == true
+                                            collapsedIds[node.node.id] = !isCollapsed
+                                        }
+                                        return true
+                                    }
+                                    val isNodeCollapsed = collapsedIds[node.node.id] == true
+                                    if (!isNodeCollapsed) {
+                                        return node.children.any { checkHit(it) }
+                                    }
+                                    return false
+                                }
+                                checkHit(staticLayoutRoot)
+                            }
+                        }
+                ) {
+                    val wireColor = Color(0xFF90A4AE)
+
+                    Canvas(modifier = Modifier.fillMaxSize()) {
+                        drawTreeOnCanvas(
+                            scope = this,
+                            root = staticLayoutRoot,
+                            scale = scale,
+                            offset = offset,
+                            wireColor = wireColor,
+                            collapsedIds = collapsedIds,
+                            selectedPersonId = selectedPersonId
+                        )
+                    }
+
+                    AnimatedVisibility(
+                        visible = isInteracting,
+                        enter = fadeIn(),
+                        exit = fadeOut(),
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(16.dp)
+                    ) {
+                        Surface(
+                            shape = RoundedCornerShape(20.dp),
+                            color = MaterialTheme.colorScheme.inverseSurface.copy(alpha = 0.85f),
+                            contentColor = MaterialTheme.colorScheme.inverseOnSurface
+                        ) {
+                            Text(
+                                text = "${(scale * 100).roundToInt()}%",
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
             }
 
-            // Translation in-progress badge
             if (isTranslating) {
                 Surface(
                     shape = RoundedCornerShape(24.dp),
@@ -322,74 +355,141 @@ fun FamilyTreeViewerScreen(
                 }
             }
 
-            // Zoom level indicator
-            AnimatedVisibility(
-                visible = isInteracting,
-                enter = fadeIn(),
-                exit = fadeOut(),
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(16.dp)
-            ) {
-                Surface(
-                    shape = RoundedCornerShape(20.dp),
-                    color = MaterialTheme.colorScheme.inverseSurface.copy(alpha = 0.85f),
-                    contentColor = MaterialTheme.colorScheme.inverseOnSurface
-                ) {
-                    Text(
-                        text = "${(scale * 100).roundToInt()}%",
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-            }
-
-            // Bottom Action Floating Pill: Collapse, Expand, Fit to Screen
-            Surface(
-                shape = RoundedCornerShape(28.dp),
-                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
-                tonalElevation = 6.dp,
-                shadowElevation = 8.dp,
+            // Bottom Floating Controls Section
+            Column(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(bottom = 20.dp)
+                    .padding(bottom = 16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                // Level selector chips strip
+                AnimatedVisibility(
+                    visible = showLevelSelector,
+                    enter = fadeIn(),
+                    exit = fadeOut()
                 ) {
-                    ActionIconButtonWithTooltip(
-                        tooltipText = "Collapse Selected",
-                        icon = Icons.Default.UnfoldLess,
-                        enabled = selectedPersonId != null,
-                        onClick = {
-                            selectedPersonId?.let { id -> collapsedIds[id] = true }
-                        }
-                    )
-
-                    ActionIconButtonWithTooltip(
-                        tooltipText = "Expand Selected",
-                        icon = Icons.Default.UnfoldMore,
-                        enabled = selectedPersonId != null,
-                        onClick = {
-                            selectedPersonId?.let { id -> collapsedIds[id] = false }
-                        }
-                    )
-
-                    VerticalDivider(
+                    Surface(
+                        shape = RoundedCornerShape(24.dp),
+                        color = MaterialTheme.colorScheme.surface,
+                        tonalElevation = 8.dp,
+                        shadowElevation = 8.dp,
                         modifier = Modifier
-                            .height(24.dp)
-                            .padding(horizontal = 4.dp),
-                        color = MaterialTheme.colorScheme.outlineVariant
-                    )
+                            .padding(bottom = 8.dp)
+                            .widthIn(max = 380.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .horizontalScroll(rememberScrollState())
+                                .padding(horizontal = 12.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = "Depth:",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
 
-                    ActionIconButtonWithTooltip(
-                        tooltipText = "Fit to Screen",
-                        icon = Icons.Default.CenterFocusStrong,
-                        onClick = { fitTreeToScreen() }
-                    )
+                            // Level 0 (Root Only)
+                            AssistChip(
+                                onClick = {
+                                    collapsedIds.clear()
+                                    applyLevelExpansion(currentRootNode, targetLevel = 0, currentDepth = 0, collapsedMap = collapsedIds)
+                                    showLevelSelector = false
+                                },
+                                label = { Text("Root") },
+                                shape = RoundedCornerShape(12.dp)
+                            )
+
+                            // Level 1 .. Max
+                            for (lvl in 1..maxDepth) {
+                                AssistChip(
+                                    onClick = {
+                                        collapsedIds.clear()
+                                        applyLevelExpansion(currentRootNode, targetLevel = lvl, currentDepth = 0, collapsedMap = collapsedIds)
+                                        showLevelSelector = false
+                                    },
+                                    label = { Text("L$lvl") },
+                                    shape = RoundedCornerShape(12.dp)
+                                )
+                            }
+
+                            // All Expanded
+                            FilledTonalButton(
+                                onClick = {
+                                    collapsedIds.clear()
+                                    showLevelSelector = false
+                                },
+                                shape = RoundedCornerShape(12.dp),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                                modifier = Modifier.height(32.dp)
+                            ) {
+                                Text("All", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                }
+
+                // Main Floating Action Pill
+                Surface(
+                    shape = RoundedCornerShape(28.dp),
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
+                    tonalElevation = 6.dp,
+                    shadowElevation = 8.dp
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        // Level expansion toggle button
+                        ActionIconButtonWithTooltip(
+                            tooltipText = "Expand to Level (1, 2, 3...)",
+                            icon = Icons.Default.Layers,
+                            onClick = { showLevelSelector = !showLevelSelector }
+                        )
+
+                        VerticalDivider(
+                            modifier = Modifier
+                                .height(24.dp)
+                                .padding(horizontal = 2.dp),
+                            color = MaterialTheme.colorScheme.outlineVariant
+                        )
+
+                        ActionIconButtonWithTooltip(
+                            tooltipText = "Collapse Selected",
+                            icon = Icons.Default.UnfoldLess,
+                            enabled = selectedPersonId != null,
+                            onClick = {
+                                selectedPersonId?.let { id -> collapsedIds[id] = true }
+                            }
+                        )
+
+                        ActionIconButtonWithTooltip(
+                            tooltipText = "Expand Selected",
+                            icon = Icons.Default.UnfoldMore,
+                            enabled = selectedPersonId != null,
+                            onClick = {
+                                selectedPersonId?.let { id -> collapsedIds[id] = false }
+                            }
+                        )
+
+                        if (!isHierarchyView) {
+                            VerticalDivider(
+                                modifier = Modifier
+                                    .height(24.dp)
+                                    .padding(horizontal = 2.dp),
+                                color = MaterialTheme.colorScheme.outlineVariant
+                            )
+
+                            ActionIconButtonWithTooltip(
+                                tooltipText = "Fit to Screen",
+                                icon = Icons.Default.CenterFocusStrong,
+                                onClick = { fitTreeToScreen() }
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -401,163 +501,12 @@ fun FamilyTreeViewerScreen(
                 onDismiss = { showPrintDialog = false }
             )
         }
-
-        if (showHierarchyDialog) {
-            HierarchyViewDialog(
-                title = tree.title,
-                rootNode = currentRootNode,
-                onDismiss = { showHierarchyDialog = false }
-            )
-        }
-    }
-}
-
-// Flat item for the hierarchy view
-private data class HierarchyItem(
-    val node: PersonNode,
-    val depth: Int,
-    val isLastSibling: Boolean
-)
-
-private fun flattenHierarchy(node: PersonNode, depth: Int = 0): List<HierarchyItem> {
-    val result = mutableListOf<HierarchyItem>()
-    result.add(HierarchyItem(node, depth, false))
-    node.children.forEachIndexed { index, child ->
-        result.addAll(flattenHierarchy(child, depth + 1))
-    }
-    return result
-}
-
-@Composable
-fun HierarchyViewDialog(
-    title: String,
-    rootNode: PersonNode,
-    onDismiss: () -> Unit
-) {
-    val hierarchyList = remember(rootNode) { flattenHierarchy(rootNode) }
-
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
-    ) {
-        Surface(
-            shape = RoundedCornerShape(24.dp),
-            tonalElevation = 6.dp,
-            color = MaterialTheme.colorScheme.surface,
-            modifier = Modifier
-                .fillMaxWidth(0.92f)
-                .fillMaxHeight(0.85f)
-                .padding(vertical = 16.dp)
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(20.dp)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Family Hierarchy",
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            text = title,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.outline,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                    IconButton(onClick = onDismiss) {
-                        Icon(Icons.Default.Close, contentDescription = "Close")
-                    }
-                }
-
-                Spacer(Modifier.height(12.dp))
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                Spacer(Modifier.height(8.dp))
-
-                LazyColumn(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth(),
-                    contentPadding = PaddingValues(vertical = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    items(hierarchyList) { item ->
-                        val themeColor = GenerationColors[item.depth % GenerationColors.size]
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(start = (item.depth * 20).dp, top = 2.dp, bottom = 2.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            if (item.depth > 0) {
-                                Icon(
-                                    imageVector = Icons.AutoMirrored.Filled.ArrowRight,
-                                    contentDescription = null,
-                                    tint = themeColor.copy(alpha = 0.8f),
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            }
-                            Surface(
-                                shape = CircleShape,
-                                color = themeColor.copy(alpha = 0.15f),
-                                modifier = Modifier.size(28.dp)
-                            ) {
-                                Box(contentAlignment = Alignment.Center) {
-                                    Icon(
-                                        imageVector = Icons.Default.Person,
-                                        contentDescription = null,
-                                        tint = themeColor,
-                                        modifier = Modifier.size(16.dp)
-                                    )
-                                }
-                            }
-                            Spacer(Modifier.width(10.dp))
-                            Column {
-                                Text(
-                                    text = item.node.name,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    fontWeight = if (item.depth == 0) FontWeight.Bold else FontWeight.Medium
-                                )
-                                if (item.node.children.isNotEmpty()) {
-                                    Text(
-                                        text = "${item.node.children.size} children",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.outline
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-
-                Spacer(Modifier.height(12.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.End
-                ) {
-                    Button(
-                        onClick = onDismiss,
-                        shape = RoundedCornerShape(10.dp)
-                    ) {
-                        Text("Done")
-                    }
-                }
-            }
-        }
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ActionIconButtonWithTooltip(
+fun ActionIconButtonWithTooltip(
     tooltipText: String,
     icon: ImageVector,
     enabled: Boolean = true,
@@ -584,650 +533,4 @@ private fun ActionIconButtonWithTooltip(
             )
         }
     }
-}
-
-private fun drawTreeOnCanvas(
-    scope: DrawScope,
-    root: RenderableNode,
-    scale: Float,
-    offset: Offset,
-    wireColor: Color,
-    collapsedIds: Map<String, Boolean>,
-    selectedPersonId: String?
-) {
-    val nativeCanvas = scope.drawContext.canvas.nativeCanvas
-
-    val textPaint = Paint().apply {
-        color = android.graphics.Color.DKGRAY
-        textSize = 10f * scale
-        textAlign = Paint.Align.CENTER
-        typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-        isAntiAlias = true
-    }
-
-    val indicatorPaint = Paint().apply {
-        textSize = 8.5f * scale
-        textAlign = Paint.Align.CENTER
-        typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-        isAntiAlias = true
-    }
-
-    fun drawConnectors(parent: RenderableNode) {
-        val isCollapsed = collapsedIds[parent.node.id] == true
-        if (parent.children.isNotEmpty() && !isCollapsed) {
-            val parentX = parent.x * scale + offset.x
-            val parentBottomY = (parent.y + (CIRCLE_RADIUS * 2) + 20f) * scale + offset.y
-            val busY = (parent.y + (CIRCLE_RADIUS * 2) + 36f) * scale + offset.y
-
-            scope.drawLine(
-                color = wireColor,
-                start = Offset(parentX, parentBottomY),
-                end = Offset(parentX, busY),
-                strokeWidth = 1.8f * scale
-            )
-
-            val firstChildX = parent.children.first().x * scale + offset.x
-            val lastChildX = parent.children.last().x * scale + offset.x
-
-            if (parent.children.size > 1) {
-                scope.drawLine(
-                    color = wireColor,
-                    start = Offset(firstChildX, busY),
-                    end = Offset(lastChildX, busY),
-                    strokeWidth = 1.8f * scale
-                )
-            }
-
-            parent.children.forEach { child ->
-                val childX = child.x * scale + offset.x
-                val childCircleTop = child.y * scale + offset.y
-
-                scope.drawLine(
-                    color = wireColor,
-                    start = Offset(childX, busY),
-                    end = Offset(childX, childCircleTop),
-                    strokeWidth = 1.8f * scale
-                )
-
-                val s = 4.5f * scale
-                val arrowPath = Path().apply {
-                    moveTo(childX - s, childCircleTop - s * 1.5f)
-                    lineTo(childX, childCircleTop)
-                    lineTo(childX + s, childCircleTop - s * 1.5f)
-                }
-                scope.drawPath(
-                    path = arrowPath,
-                    color = wireColor,
-                    style = Stroke(width = 1.8f * scale)
-                )
-
-                drawConnectors(child)
-            }
-        }
-    }
-    drawConnectors(root)
-
-    fun drawNodes(node: RenderableNode) {
-        val cx = node.x * scale + offset.x
-        val cy = (node.y + CIRCLE_RADIUS) * scale + offset.y
-        val r = CIRCLE_RADIUS * scale
-        val themeColor = GenerationColors[node.depth % GenerationColors.size]
-        val isCollapsed = collapsedIds[node.node.id] == true
-        val isSelected = node.node.id == selectedPersonId
-
-        if (isSelected) {
-            scope.drawCircle(
-                color = Color(0xFF2979FF).copy(alpha = 0.25f),
-                radius = r + (8f * scale),
-                center = Offset(cx, cy)
-            )
-            scope.drawCircle(
-                color = Color(0xFF2979FF),
-                radius = r + (5f * scale),
-                center = Offset(cx, cy),
-                style = Stroke(width = 2.2f * scale)
-            )
-        }
-
-        scope.drawCircle(
-            color = Color.White,
-            radius = r,
-            center = Offset(cx, cy)
-        )
-
-        scope.drawCircle(
-            color = themeColor,
-            radius = r,
-            center = Offset(cx, cy),
-            style = Stroke(width = 2.2f * scale)
-        )
-
-        val headR = 3.8f * scale
-        scope.drawCircle(
-            color = themeColor,
-            radius = headR,
-            center = Offset(cx, cy - 2.8f * scale)
-        )
-        scope.drawArc(
-            color = themeColor,
-            startAngle = 180f,
-            sweepAngle = 180f,
-            useCenter = true,
-            topLeft = Offset(cx - 6.5f * scale, cy + 1.8f * scale),
-            size = androidx.compose.ui.geometry.Size(13f * scale, 11f * scale)
-        )
-
-        val textY = cy + r + 12f * scale
-        scope.drawIntoCanvas {
-            nativeCanvas.drawText(node.node.name, cx, textY, textPaint)
-            if (node.node.children.isNotEmpty() && isCollapsed) {
-                indicatorPaint.color = themeColor.toArgb()
-                nativeCanvas.drawText("+${node.node.children.size}", cx, textY + 10f * scale, indicatorPaint)
-            }
-        }
-
-        if (!isCollapsed) {
-            node.children.forEach { drawNodes(it) }
-        }
-    }
-    drawNodes(root)
-}
-
-private data class TreeBounds(val minX: Float, val maxX: Float, val minY: Float, val maxY: Float) {
-    val width: Float get() = maxX - minX
-    val height: Float get() = maxY - minY
-}
-
-private fun computeTreeBounds(root: RenderableNode): TreeBounds {
-    var minX = Float.MAX_VALUE
-    var maxX = Float.MIN_VALUE
-    var minY = Float.MAX_VALUE
-    var maxY = Float.MIN_VALUE
-
-    fun walk(n: RenderableNode) {
-        minX = min(minX, n.x - (NODE_BOX_WIDTH / 2f))
-        maxX = max(maxX, n.x + (NODE_BOX_WIDTH / 2f))
-        minY = min(minY, n.y)
-        maxY = max(maxY, n.y + (CIRCLE_RADIUS * 2) + 26f)
-        n.children.forEach { walk(it) }
-    }
-    walk(root)
-    return TreeBounds(minX, maxX, minY, maxY)
-}
-
-@Composable
-fun A4PrintPreviewDialog(
-    title: String,
-    layoutRoot: RenderableNode,
-    onDismiss: () -> Unit
-) {
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    val bounds = remember(layoutRoot) { computeTreeBounds(layoutRoot) }
-    var isLandscape by remember { mutableStateOf(true) }
-
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
-    ) {
-        Surface(
-            shape = RoundedCornerShape(20.dp),
-            tonalElevation = 6.dp,
-            color = MaterialTheme.colorScheme.surface,
-            modifier = Modifier
-                .fillMaxWidth(0.96f)
-                .fillMaxHeight(0.94f)
-                .padding(vertical = 10.dp)
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(16.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column {
-                        Text(
-                            text = "Export & Print",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            text = if (isLandscape) "A4 Landscape (297 × 210 mm)" else "A4 Portrait (210 × 297 mm)",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.outline
-                        )
-                    }
-
-                    OutlinedButton(
-                        onClick = { isLandscape = !isLandscape },
-                        shape = RoundedCornerShape(10.dp),
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
-                    ) {
-                        Icon(
-                            imageVector = if (isLandscape) Icons.Default.CropPortrait else Icons.Default.CropLandscape,
-                            contentDescription = "Change Layout",
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(Modifier.width(6.dp))
-                        Text(if (isLandscape) "Portrait" else "Landscape")
-                    }
-                }
-
-                Spacer(Modifier.height(10.dp))
-
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth()
-                        .background(Color(0xFFE0E0E0), RoundedCornerShape(8.dp))
-                        .padding(8.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    val aspectRatio = if (isLandscape) 1.414f / 1f else 1f / 1.414f
-
-                    Surface(
-                        color = Color.White,
-                        shadowElevation = 4.dp,
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .aspectRatio(aspectRatio, matchHeightConstraintsFirst = !isLandscape)
-                    ) {
-                        Canvas(modifier = Modifier.fillMaxSize()) {
-                            val sheetW = size.width
-                            val sheetH = size.height
-                            val margin = 16f
-                            val usableW = sheetW - (margin * 2)
-                            val usableH = sheetH - (margin * 2)
-
-                            val autoScale = min(usableW / max(bounds.width, 1f), usableH / max(bounds.height, 1f))
-                            val fittedW = bounds.width * autoScale
-                            val fittedH = bounds.height * autoScale
-                            val offsetX = margin + ((usableW - fittedW) / 2f) - (bounds.minX * autoScale)
-                            val offsetY = margin + ((usableH - fittedH) / 2f) - (bounds.minY * autoScale)
-
-                            drawTreeOnCanvas(
-                                scope = this,
-                                root = layoutRoot,
-                                scale = autoScale,
-                                offset = Offset(offsetX, offsetY),
-                                wireColor = Color(0xFF546E7A),
-                                collapsedIds = emptyMap(),
-                                selectedPersonId = null
-                            )
-                        }
-                    }
-                }
-
-                Spacer(Modifier.height(12.dp))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    TextButton(onClick = onDismiss) { Text("Cancel") }
-
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        FilledTonalIconButton(
-                            onClick = {
-                                scope.launch {
-                                    val bmp = generateTreeBitmap(layoutRoot, bounds, isLandscape)
-                                    saveBitmapToGallery(context, title, bmp)
-                                }
-                            }
-                        ) {
-                            Icon(Icons.Default.Download, contentDescription = "Download Image")
-                        }
-
-                        FilledTonalIconButton(
-                            onClick = {
-                                scope.launch {
-                                    val bmp = generateTreeBitmap(layoutRoot, bounds, isLandscape)
-                                    val file = saveCacheBitmap(context, bmp, title)
-                                    val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
-                                    val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                                        type = "image/png"
-                                        putExtra(Intent.EXTRA_STREAM, uri)
-                                        setPackage("com.whatsapp")
-                                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                    }
-                                    try {
-                                        context.startActivity(shareIntent)
-                                    } catch (_: Exception) {
-                                        shareIntent.setPackage("com.whatsapp.w4b")
-                                        try {
-                                            context.startActivity(shareIntent)
-                                        } catch (_: Exception) {
-                                            Toast.makeText(context, "WhatsApp not installed", Toast.LENGTH_SHORT).show()
-                                        }
-                                    }
-                                }
-                            }
-                        ) {
-                            Icon(Icons.Default.Share, contentDescription = "WhatsApp Share")
-                        }
-
-                        FilledIconButton(
-                            onClick = {
-                                scope.launch {
-                                    val bmp = generateTreeBitmap(layoutRoot, bounds, isLandscape)
-                                    val file = saveCacheBitmap(context, bmp, title)
-                                    val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
-                                    val printIntent = Intent(Intent.ACTION_SEND).apply {
-                                        type = "image/png"
-                                        putExtra(Intent.EXTRA_STREAM, uri)
-                                        setPackage("com.nokoprint")
-                                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                    }
-                                    try {
-                                        context.startActivity(printIntent)
-                                    } catch (_: Exception) {
-                                        printIntent.setPackage("com.noco.print")
-                                        try {
-                                            context.startActivity(printIntent)
-                                        } catch (_: Exception) {
-                                            Toast.makeText(context, "NokoPrint app not installed", Toast.LENGTH_SHORT).show()
-                                        }
-                                    }
-                                }
-                            }
-                        ) {
-                            Icon(Icons.Default.Print, contentDescription = "Print Page")
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-private suspend fun generateTreeBitmap(
-    root: RenderableNode,
-    bounds: TreeBounds,
-    isLandscape: Boolean
-): Bitmap = withContext(Dispatchers.Default) {
-    val width = if (isLandscape) 2480 else 1754
-    val height = if (isLandscape) 1754 else 2480
-
-    val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-    val canvas = android.graphics.Canvas(bitmap)
-    canvas.drawColor(android.graphics.Color.WHITE)
-
-    val margin = 80f
-    val usableW = width - (margin * 2)
-    val usableH = height - (margin * 2)
-
-    val autoScale = min(usableW / max(bounds.width, 1f), usableH / max(bounds.height, 1f))
-    val fittedW = bounds.width * autoScale
-    val fittedH = bounds.height * autoScale
-    val offsetX = margin + ((usableW - fittedW) / 2f) - (bounds.minX * autoScale)
-    val offsetY = margin + ((usableH - fittedH) / 2f) - (bounds.minY * autoScale)
-
-    val composeCanvas = Canvas(canvas)
-    val drawScope = androidx.compose.ui.graphics.drawscope.CanvasDrawScope()
-    drawScope.draw(
-        density = androidx.compose.ui.unit.Density(2f),
-        layoutDirection = androidx.compose.ui.unit.LayoutDirection.Ltr,
-        canvas = composeCanvas,
-        size = androidx.compose.ui.geometry.Size(width.toFloat(), height.toFloat())
-    ) {
-        drawTreeOnCanvas(
-            scope = this,
-            root = root,
-            scale = autoScale,
-            offset = Offset(offsetX, offsetY),
-            wireColor = Color(0xFF455A64),
-            collapsedIds = emptyMap(),
-            selectedPersonId = null
-        )
-    }
-
-    bitmap
-}
-
-private suspend fun saveCacheBitmap(context: Context, bitmap: Bitmap, title: String): File = withContext(Dispatchers.IO) {
-    val cleanTitle = title.replace("\\s+".toRegex(), "_")
-    val file = File(context.cacheDir, "${cleanTitle}_print.png")
-    FileOutputStream(file).use { out ->
-        bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
-    }
-    file
-}
-
-private suspend fun saveBitmapToGallery(context: Context, title: String, bitmap: Bitmap) = withContext(Dispatchers.IO) {
-    val filename = "${title.replace("\\s+".toRegex(), "_")}_${System.currentTimeMillis()}.png"
-    var outputStream: OutputStream? = null
-
-    try {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            val contentValues = ContentValues().apply {
-                put(MediaStore.MediaColumns.DISPLAY_NAME, filename)
-                put(MediaStore.MediaColumns.MIME_TYPE, "image/png")
-                put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/Vanshavali")
-            }
-            val uri = context.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues)
-            if (uri != null) {
-                outputStream = context.contentResolver.openOutputStream(uri)
-            }
-        } else {
-            val imagesDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES).toString() + "/Vanshavali"
-            val dir = File(imagesDir).apply { mkdirs() }
-            val file = File(dir, filename)
-            outputStream = FileOutputStream(file)
-        }
-
-        outputStream?.use { out ->
-            bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
-        }
-
-        withContext(Dispatchers.Main) {
-            Toast.makeText(context, "Image saved to Pictures/Vanshavali!", Toast.LENGTH_SHORT).show()
-        }
-    } catch (e: Exception) {
-        withContext(Dispatchers.Main) {
-            Toast.makeText(context, "Failed to save image: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
-        }
-    }
-}
-
-private suspend fun downloadJsonFile(context: Context, title: String, jsonContent: String) = withContext(Dispatchers.IO) {
-    val filename = "${title.replace("\\s+".toRegex(), "_")}_tree.json"
-    var outputStream: OutputStream? = null
-
-    try {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            val contentValues = ContentValues().apply {
-                put(MediaStore.MediaColumns.DISPLAY_NAME, filename)
-                put(MediaStore.MediaColumns.MIME_TYPE, "application/json")
-                put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
-            }
-            val uri = context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
-            if (uri != null) {
-                outputStream = context.contentResolver.openOutputStream(uri)
-            }
-        } else {
-            val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-            val file = File(downloadsDir, filename)
-            outputStream = FileOutputStream(file)
-        }
-
-        outputStream?.use { out ->
-            out.write(jsonContent.toByteArray())
-        }
-
-        withContext(Dispatchers.Main) {
-            Toast.makeText(context, "JSON saved to Downloads/$filename", Toast.LENGTH_LONG).show()
-        }
-    } catch (e: Exception) {
-        withContext(Dispatchers.Main) {
-            Toast.makeText(context, "Failed to save JSON: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
-        }
-    }
-}
-
-private class BNode(
-    val person: PersonNode,
-    val depth: Int,
-    val parent: BNode?,
-    val number: Int,
-    var children: List<BNode> = emptyList()
-) {
-    var x: Float = -1f
-    var mod: Float = 0f
-    var prelim: Float = 0f
-    var change: Float = 0f
-    var shift: Float = 0f
-    var ancestor: BNode = this
-    var thread: BNode? = null
-
-    fun left(): BNode? = thread ?: children.firstOrNull()
-    fun right(): BNode? = thread ?: children.lastOrNull()
-    fun leftSibling(): BNode? = if (parent != null && number > 0) parent.children[number - 1] else null
-}
-
-private fun buildBalancedTree(root: PersonNode): RenderableNode {
-    fun createTree(person: PersonNode, depth: Int, parent: BNode?, index: Int): BNode {
-        val bNode = BNode(person, depth, parent, index)
-        bNode.children = person.children.mapIndexed { i, child ->
-            createTree(child, depth + 1, bNode, i)
-        }
-        return bNode
-    }
-
-    val bRoot = createTree(root, 0, null, 0)
-    firstWalkBW(bRoot)
-    secondWalkBW(bRoot, -bRoot.prelim)
-
-    fun toRenderable(bn: BNode): RenderableNode {
-        return RenderableNode(
-            node = bn.person,
-            x = bn.x,
-            y = bn.depth * LEVEL_HEIGHT + 30f,
-            depth = bn.depth,
-            children = bn.children.map { toRenderable(it) }
-        )
-    }
-
-    return toRenderable(bRoot)
-}
-
-private fun firstWalkBW(v: BNode) {
-    if (v.children.isEmpty()) {
-        val left = v.leftSibling()
-        v.prelim = if (left != null) left.prelim + SIBLING_DISTANCE else 0f
-    } else {
-        var defaultAncestor = v.children.first()
-        v.children.forEach { w ->
-            firstWalkBW(w)
-            defaultAncestor = apportion(w, defaultAncestor)
-        }
-        executeShifts(v)
-        val midpoint = (v.children.first().prelim + v.children.last().prelim) / 2f
-        val left = v.leftSibling()
-        if (left != null) {
-            v.prelim = left.prelim + SIBLING_DISTANCE
-            v.mod = v.prelim - midpoint
-        } else {
-            v.prelim = midpoint
-        }
-    }
-}
-
-private fun apportion(v: BNode, defaultAncestor: BNode): BNode {
-    val leftSibling = v.leftSibling() ?: return defaultAncestor
-
-    var vip: BNode? = v
-    var vop: BNode? = v
-    var vim: BNode? = leftSibling
-    var vom: BNode? = vip?.parent?.children?.firstOrNull()
-
-    var sip = vip?.mod ?: 0f
-    var sop = vop?.mod ?: 0f
-    var sim = vim?.mod ?: 0f
-    var som = vom?.mod ?: 0f
-
-    while (vim?.right() != null && vip?.left() != null) {
-        val nextVim = vim?.right()
-        val nextVip = vip?.left()
-        val nextVom = vom?.left()
-        val nextVop = vop?.right()
-
-        vim = nextVim
-        vip = nextVip
-        vom = nextVom
-        vop = nextVop
-
-        vop?.ancestor = v
-        val vimPrelim = vim?.prelim ?: 0f
-        val vipPrelim = vip?.prelim ?: 0f
-        val shift = (vimPrelim + sim) - (vipPrelim + sip) + SIBLING_DISTANCE
-
-        if (shift > 0f) {
-            val ancestorNode = vim?.let { ancestor(it, v, defaultAncestor) } ?: defaultAncestor
-            moveSubtree(ancestorNode, v, shift)
-            sip += shift
-            sop += shift
-        }
-
-        sim += vim?.mod ?: 0f
-        sip += vip?.mod ?: 0f
-        som += vom?.mod ?: 0f
-        sop += vop?.mod ?: 0f
-    }
-
-    if (vim?.right() != null && vop?.right() == null) {
-        vop?.thread = vim?.right()
-        vop?.mod = (vop?.mod ?: 0f) + sim - sop
-    }
-    if (vip?.left() != null && vom?.left() == null) {
-        vom?.thread = vip?.left()
-        vom?.mod = (vom?.mod ?: 0f) + sip - som
-        return v
-    }
-    return defaultAncestor
-}
-
-private fun moveSubtree(wl: BNode, wr: BNode, shift: Float) {
-    val subtrees = wr.number - wl.number
-    if (subtrees > 0) {
-        wr.change -= shift / subtrees
-        wr.shift += shift
-        wl.change += shift / subtrees
-        wr.prelim += shift
-        wr.mod += shift
-    }
-}
-
-private fun executeShifts(v: BNode) {
-    var shift = 0f
-    var change = 0f
-    for (i in v.children.indices.reversed()) {
-        val w = v.children[i]
-        w.prelim += shift
-        w.mod += shift
-        change += w.change
-        shift += w.shift + change
-    }
-}
-
-private fun ancestor(vim: BNode, v: BNode, defaultAncestor: BNode): BNode {
-    return if (v.parent != null && v.parent.children.contains(vim.ancestor)) {
-        vim.ancestor
-    } else {
-        defaultAncestor
-    }
-}
-
-private fun secondWalkBW(v: BNode, m: Float) {
-    v.x = v.prelim + m
-    v.children.forEach { secondWalkBW(it, m + v.mod) }
 }
