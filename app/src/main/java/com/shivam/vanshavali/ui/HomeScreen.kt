@@ -79,7 +79,6 @@ fun HomeScreen(
     var showSampleDialog by remember { mutableStateOf(false) }
     var lastBackPressTime by remember { mutableLongStateOf(0L) }
 
-    // Long press action states
     var activeTreeForAction by remember { mutableStateOf<SavedFamilyTree?>(null) }
     var showActionSheet by remember { mutableStateOf(false) }
     var treeToReplace by remember { mutableStateOf<SavedFamilyTree?>(null) }
@@ -306,7 +305,6 @@ fun HomeScreen(
             }
         }
 
-        // Long Press Action Bottom Sheet
         if (showActionSheet && activeTreeForAction != null) {
             val selectedTree = activeTreeForAction!!
             ModalBottomSheet(
@@ -358,7 +356,6 @@ fun HomeScreen(
             }
         }
 
-        // Replace JSON Dialog
         if (treeToReplace != null) {
             ReplaceTreeDialog(
                 tree = treeToReplace!!,
@@ -370,7 +367,6 @@ fun HomeScreen(
             )
         }
 
-        // Delete Confirmation Dialog
         if (treeToDelete != null) {
             AlertDialog(
                 onDismissRequest = { treeToDelete = null },
@@ -430,11 +426,131 @@ fun HomeScreen(
 }
 
 @Composable
+fun AddTreeDialog(
+    onDismiss: () -> Unit,
+    onConfirm: (title: String, json: String) -> Unit
+) {
+    val context = LocalContext.current
+    var title by remember { mutableStateOf("") }
+    var jsonText by remember { mutableStateOf("") }
+    var errorMsg by remember { mutableStateOf<String?>(null) }
+
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = RoundedCornerShape(28.dp),
+            tonalElevation = 6.dp,
+            color = MaterialTheme.colorScheme.surface,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 16.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(24.dp)
+            ) {
+                Text(
+                    text = "New Family Tree",
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "Provide a lineage name and paste your tree's JSON definition below.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.outline,
+                    modifier = Modifier.padding(top = 4.dp, bottom = 18.dp)
+                )
+
+                OutlinedTextField(
+                    value = title,
+                    onValueChange = { title = it },
+                    label = { Text("Tree Title (Optional)") },
+                    leadingIcon = { Icon(Icons.Default.Title, contentDescription = null) },
+                    singleLine = true,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Spacer(Modifier.height(12.dp))
+
+                OutlinedTextField(
+                    value = jsonText,
+                    onValueChange = {
+                        jsonText = it
+                        errorMsg = null
+                    },
+                    label = { Text("Lineage JSON *") },
+                    leadingIcon = { Icon(Icons.Default.Code, contentDescription = null) },
+                    trailingIcon = {
+                        IconButton(
+                            onClick = {
+                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                val clip = clipboard.primaryClip
+                                if (clip != null && clip.itemCount > 0) {
+                                    val text = clip.getItemAt(0).coerceToText(context)?.toString().orEmpty()
+                                    if (text.isNotBlank()) {
+                                        jsonText = text
+                                        errorMsg = null
+                                        Toast.makeText(context, "Pasted from clipboard!", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            }
+                        ) {
+                            Icon(Icons.Default.ContentPaste, contentDescription = "Paste from Clipboard")
+                        }
+                    },
+                    placeholder = { Text("{\"id\":\"1\",\"name\":\"Root Name\",\"gender\":\"male\",\"children\":[]}") },
+                    minLines = 5,
+                    maxLines = 8,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                    isError = errorMsg != null,
+                    textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace)
+                )
+
+                if (errorMsg != null) {
+                    Text(
+                        text = errorMsg!!,
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(top = 6.dp, start = 4.dp)
+                    )
+                }
+
+                Spacer(Modifier.height(24.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    TextButton(onClick = onDismiss) { Text("Cancel") }
+                    Spacer(Modifier.width(8.dp))
+                    Button(
+                        shape = RoundedCornerShape(10.dp),
+                        onClick = {
+                            if (jsonText.isBlank()) {
+                                errorMsg = "JSON payload cannot be empty."
+                            } else {
+                                onConfirm(title, jsonText)
+                            }
+                        }
+                    ) {
+                        Text("Generate Tree")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 fun ReplaceTreeDialog(
     tree: SavedFamilyTree,
     onDismiss: () -> Unit,
     onConfirm: (title: String, json: String) -> Unit
 ) {
+    val context = LocalContext.current
     var title by remember { mutableStateOf(tree.title) }
     var jsonText by remember {
         mutableStateOf(Json { prettyPrint = true }.encodeToString(tree.root))
@@ -487,6 +603,24 @@ fun ReplaceTreeDialog(
                     },
                     label = { Text("Lineage JSON *") },
                     leadingIcon = { Icon(Icons.Default.Code, contentDescription = null) },
+                    trailingIcon = {
+                        IconButton(
+                            onClick = {
+                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                val clip = clipboard.primaryClip
+                                if (clip != null && clip.itemCount > 0) {
+                                    val text = clip.getItemAt(0).coerceToText(context)?.toString().orEmpty()
+                                    if (text.isNotBlank()) {
+                                        jsonText = text
+                                        errorMsg = null
+                                        Toast.makeText(context, "Pasted from clipboard!", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            }
+                        ) {
+                            Icon(Icons.Default.ContentPaste, contentDescription = "Paste from Clipboard")
+                        }
+                    },
                     minLines = 6,
                     maxLines = 10,
                     shape = RoundedCornerShape(12.dp),
@@ -511,9 +645,7 @@ fun ReplaceTreeDialog(
                     horizontalArrangement = Arrangement.End,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    TextButton(onClick = onDismiss) {
-                        Text("Cancel")
-                    }
+                    TextButton(onClick = onDismiss) { Text("Cancel") }
                     Spacer(Modifier.width(8.dp))
                     Button(
                         shape = RoundedCornerShape(10.dp),
@@ -736,108 +868,6 @@ fun AppInfoDialog(
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text("Close")
-                }
-            }
-        }
-    }
-}
-
-@Composable
-fun AddTreeDialog(
-    onDismiss: () -> Unit,
-    onConfirm: (title: String, json: String) -> Unit
-) {
-    var title by remember { mutableStateOf("") }
-    var jsonText by remember { mutableStateOf("") }
-    var errorMsg by remember { mutableStateOf<String?>(null) }
-
-    Dialog(onDismissRequest = onDismiss) {
-        Surface(
-            shape = RoundedCornerShape(28.dp),
-            tonalElevation = 6.dp,
-            color = MaterialTheme.colorScheme.surface,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 16.dp)
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(24.dp)
-            ) {
-                Text(
-                    text = "New Family Tree",
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.Bold
-                )
-                Text(
-                    text = "Provide a lineage name and paste your tree's JSON definition below.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.outline,
-                    modifier = Modifier.padding(top = 4.dp, bottom = 18.dp)
-                )
-
-                OutlinedTextField(
-                    value = title,
-                    onValueChange = { title = it },
-                    label = { Text("Tree Title (Optional)") },
-                    leadingIcon = { Icon(Icons.Default.Title, contentDescription = null) },
-                    singleLine = true,
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                Spacer(Modifier.height(12.dp))
-
-                OutlinedTextField(
-                    value = jsonText,
-                    onValueChange = {
-                        jsonText = it
-                        errorMsg = null
-                    },
-                    label = { Text("Lineage JSON *") },
-                    leadingIcon = { Icon(Icons.Default.Code, contentDescription = null) },
-                    placeholder = { Text("{\"id\":\"1\",\"name\":\"Root Name\",\"gender\":\"male\",\"children\":[]}") },
-                    minLines = 5,
-                    maxLines = 8,
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.fillMaxWidth(),
-                    isError = errorMsg != null,
-                    textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace)
-                )
-
-                if (errorMsg != null) {
-                    Text(
-                        text = errorMsg!!,
-                        color = MaterialTheme.colorScheme.error,
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.padding(top = 6.dp, start = 4.dp)
-                    )
-                }
-
-                Spacer(Modifier.height(24.dp))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.End,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    TextButton(onClick = onDismiss) {
-                        Text("Cancel")
-                    }
-                    Spacer(Modifier.width(8.dp))
-                    Button(
-                        shape = RoundedCornerShape(10.dp),
-                        onClick = {
-                            if (jsonText.isBlank()) {
-                                errorMsg = "JSON payload cannot be empty."
-                            } else {
-                                onConfirm(title, jsonText)
-                            }
-                        }
-                    ) {
-                        Text("Generate Tree")
-                    }
                 }
             }
         }

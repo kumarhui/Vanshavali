@@ -45,6 +45,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.FileProvider
+import com.shivam.vanshavali.data.TranslationHelper
 import com.shivam.vanshavali.model.PersonNode
 import com.shivam.vanshavali.model.SavedFamilyTree
 import kotlinx.coroutines.Dispatchers
@@ -66,12 +67,12 @@ private const val LEVEL_HEIGHT = 100f
 private const val SIBLING_DISTANCE = 74f
 
 private val GenerationColors = listOf(
-    Color(0xFF00BFA5),
-    Color(0xFFFFA000),
-    Color(0xFF7E57C2),
-    Color(0xFFEC407A),
-    Color(0xFF26A69A),
-    Color(0xFF5C6BC0)
+    Color(0xFF00BFA5), // Teal
+    Color(0xFFFFA000), // Amber
+    Color(0xFF7E57C2), // Purple
+    Color(0xFFEC407A), // Rose / Pink
+    Color(0xFF26A69A), // Cyan
+    Color(0xFF5C6BC0)  // Indigo
 )
 
 data class RenderableNode(
@@ -95,6 +96,11 @@ fun FamilyTreeViewerScreen(
     val collapsedIds = remember { mutableStateMapOf<String, Boolean>() }
     var selectedPersonId by remember { mutableStateOf<String?>(tree.root.id) }
 
+    // Translation States
+    var currentRootNode by remember(tree) { mutableStateOf(tree.root) }
+    var isHindiActive by remember { mutableStateOf(false) }
+    var isTranslating by remember { mutableStateOf(false) }
+
     var scale by remember { mutableFloatStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
     var isInteracting by remember { mutableStateOf(false) }
@@ -111,8 +117,9 @@ fun FamilyTreeViewerScreen(
         }
     }
 
-    val staticLayoutRoot = remember(tree) {
-        buildBalancedTree(tree.root)
+    // Geometry is computed from currentRootNode (coordinates stay stable)
+    val staticLayoutRoot = remember(currentRootNode) {
+        buildBalancedTree(currentRootNode)
     }
 
     val treeBounds = remember(staticLayoutRoot) { computeTreeBounds(staticLayoutRoot) }
@@ -156,6 +163,28 @@ fun FamilyTreeViewerScreen(
                     }
                 },
                 actions = {
+                    // Language Toggle Icon (EN <-> HI)
+                    ActionIconButtonWithTooltip(
+                        tooltipText = if (isHindiActive) "Switch to English" else "Translate to Hindi",
+                        icon = Icons.Default.Translate,
+                        enabled = !isTranslating,
+                        onClick = {
+                            scope.launch {
+                                isTranslating = true
+                                Toast.makeText(
+                                    context,
+                                    if (!isHindiActive) "Translating to Hindi..." else "Translating to English...",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                                val targetHindi = !isHindiActive
+                                val translatedRoot = TranslationHelper.translateTree(tree.root, toHindi = targetHindi)
+                                currentRootNode = translatedRoot
+                                isHindiActive = targetHindi
+                                isTranslating = false
+                            }
+                        }
+                    )
+
                     ActionIconButtonWithTooltip(
                         tooltipText = "Collapse Selected",
                         icon = Icons.Default.UnfoldLess,
@@ -199,7 +228,7 @@ fun FamilyTreeViewerScreen(
                                 val shareIntent = Intent(Intent.ACTION_SEND).apply {
                                     type = "text/plain"
                                     putExtra(Intent.EXTRA_SUBJECT, tree.title)
-                                    putExtra(Intent.EXTRA_TEXT, "${tree.title}\n\n" + json.encodeToString(tree.root))
+                                    putExtra(Intent.EXTRA_TEXT, "${tree.title}\n\n" + json.encodeToString(currentRootNode))
                                 }
                                 context.startActivity(Intent.createChooser(shareIntent, "Share Tree JSON"))
                             }
@@ -210,7 +239,7 @@ fun FamilyTreeViewerScreen(
                             onClick = {
                                 showMenu = false
                                 scope.launch {
-                                    downloadJsonFile(context, tree.title, Json { prettyPrint = true }.encodeToString(tree.root))
+                                    downloadJsonFile(context, tree.title, Json { prettyPrint = true }.encodeToString(currentRootNode))
                                 }
                             }
                         )
@@ -282,6 +311,28 @@ fun FamilyTreeViewerScreen(
                     collapsedIds = collapsedIds,
                     selectedPersonId = selectedPersonId
                 )
+            }
+
+            // Translation in-progress badge
+            if (isTranslating) {
+                Surface(
+                    shape = RoundedCornerShape(24.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.9f),
+                    modifier = Modifier.align(Alignment.Center)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.5.dp)
+                        Text(
+                            text = "Translating names...",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+                }
             }
 
             AnimatedVisibility(
@@ -993,4 +1044,3 @@ private fun secondWalkBW(v: BNode, m: Float) {
     v.x = v.prelim + m
     v.children.forEach { secondWalkBW(it, m + v.mod) }
 }
-

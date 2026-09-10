@@ -37,6 +37,7 @@ android {
 }
 
 dependencies {
+    implementation(libs.mlkit.translate)
     implementation(libs.play.app.update)
     implementation(libs.play.app.update.ktx)
     implementation(platform(libs.androidx.compose.bom))
