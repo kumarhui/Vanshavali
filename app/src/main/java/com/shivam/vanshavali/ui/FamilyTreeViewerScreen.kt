@@ -17,12 +17,17 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowRight
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -67,12 +72,12 @@ private const val LEVEL_HEIGHT = 100f
 private const val SIBLING_DISTANCE = 74f
 
 private val GenerationColors = listOf(
-    Color(0xFF00BFA5), // Teal
-    Color(0xFFFFA000), // Amber
-    Color(0xFF7E57C2), // Purple
-    Color(0xFFEC407A), // Rose / Pink
-    Color(0xFF26A69A), // Cyan
-    Color(0xFF5C6BC0)  // Indigo
+    Color(0xFF00BFA5),
+    Color(0xFFFFA000),
+    Color(0xFF7E57C2),
+    Color(0xFFEC407A),
+    Color(0xFF26A69A),
+    Color(0xFF5C6BC0)
 )
 
 data class RenderableNode(
@@ -96,7 +101,6 @@ fun FamilyTreeViewerScreen(
     val collapsedIds = remember { mutableStateMapOf<String, Boolean>() }
     var selectedPersonId by remember { mutableStateOf<String?>(tree.root.id) }
 
-    // Translation States
     var currentRootNode by remember(tree) { mutableStateOf(tree.root) }
     var isHindiActive by remember { mutableStateOf(false) }
     var isTranslating by remember { mutableStateOf(false) }
@@ -108,6 +112,7 @@ fun FamilyTreeViewerScreen(
 
     var showMenu by remember { mutableStateOf(false) }
     var showPrintDialog by remember { mutableStateOf(false) }
+    var showHierarchyDialog by remember { mutableStateOf(false) }
     var canvasSize by remember { mutableStateOf(IntSize.Zero) }
 
     LaunchedEffect(isInteracting) {
@@ -117,7 +122,6 @@ fun FamilyTreeViewerScreen(
         }
     }
 
-    // Geometry is computed from currentRootNode (coordinates stay stable)
     val staticLayoutRoot = remember(currentRootNode) {
         buildBalancedTree(currentRootNode)
     }
@@ -163,7 +167,6 @@ fun FamilyTreeViewerScreen(
                     }
                 },
                 actions = {
-                    // Language Toggle Icon (EN <-> HI)
                     ActionIconButtonWithTooltip(
                         tooltipText = if (isHindiActive) "Switch to English" else "Translate to Hindi",
                         icon = Icons.Default.Translate,
@@ -186,30 +189,6 @@ fun FamilyTreeViewerScreen(
                     )
 
                     ActionIconButtonWithTooltip(
-                        tooltipText = "Collapse Selected",
-                        icon = Icons.Default.UnfoldLess,
-                        enabled = selectedPersonId != null,
-                        onClick = {
-                            selectedPersonId?.let { id -> collapsedIds[id] = true }
-                        }
-                    )
-
-                    ActionIconButtonWithTooltip(
-                        tooltipText = "Expand Selected",
-                        icon = Icons.Default.UnfoldMore,
-                        enabled = selectedPersonId != null,
-                        onClick = {
-                            selectedPersonId?.let { id -> collapsedIds[id] = false }
-                        }
-                    )
-
-                    ActionIconButtonWithTooltip(
-                        tooltipText = "Fit to Screen",
-                        icon = Icons.Default.CenterFocusStrong,
-                        onClick = { fitTreeToScreen() }
-                    )
-
-                    ActionIconButtonWithTooltip(
                         tooltipText = "Options",
                         icon = Icons.Default.MoreVert,
                         onClick = { showMenu = !showMenu }
@@ -219,6 +198,14 @@ fun FamilyTreeViewerScreen(
                         expanded = showMenu,
                         onDismissRequest = { showMenu = false }
                     ) {
+                        DropdownMenuItem(
+                            text = { Text("See family tree as hierarchy") },
+                            leadingIcon = { Icon(Icons.Default.AccountTree, contentDescription = null) },
+                            onClick = {
+                                showMenu = false
+                                showHierarchyDialog = true
+                            }
+                        )
                         DropdownMenuItem(
                             text = { Text("Share JSON") },
                             leadingIcon = { Icon(Icons.Default.Share, contentDescription = null) },
@@ -335,13 +322,14 @@ fun FamilyTreeViewerScreen(
                 }
             }
 
+            // Zoom level indicator
             AnimatedVisibility(
                 visible = isInteracting,
                 enter = fadeIn(),
                 exit = fadeOut(),
                 modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(20.dp)
+                    .align(Alignment.TopEnd)
+                    .padding(16.dp)
             ) {
                 Surface(
                     shape = RoundedCornerShape(20.dp),
@@ -356,6 +344,54 @@ fun FamilyTreeViewerScreen(
                     )
                 }
             }
+
+            // Bottom Action Floating Pill: Collapse, Expand, Fit to Screen
+            Surface(
+                shape = RoundedCornerShape(28.dp),
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
+                tonalElevation = 6.dp,
+                shadowElevation = 8.dp,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 20.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    ActionIconButtonWithTooltip(
+                        tooltipText = "Collapse Selected",
+                        icon = Icons.Default.UnfoldLess,
+                        enabled = selectedPersonId != null,
+                        onClick = {
+                            selectedPersonId?.let { id -> collapsedIds[id] = true }
+                        }
+                    )
+
+                    ActionIconButtonWithTooltip(
+                        tooltipText = "Expand Selected",
+                        icon = Icons.Default.UnfoldMore,
+                        enabled = selectedPersonId != null,
+                        onClick = {
+                            selectedPersonId?.let { id -> collapsedIds[id] = false }
+                        }
+                    )
+
+                    VerticalDivider(
+                        modifier = Modifier
+                            .height(24.dp)
+                            .padding(horizontal = 4.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant
+                    )
+
+                    ActionIconButtonWithTooltip(
+                        tooltipText = "Fit to Screen",
+                        icon = Icons.Default.CenterFocusStrong,
+                        onClick = { fitTreeToScreen() }
+                    )
+                }
+            }
         }
 
         if (showPrintDialog) {
@@ -364,6 +400,157 @@ fun FamilyTreeViewerScreen(
                 layoutRoot = staticLayoutRoot,
                 onDismiss = { showPrintDialog = false }
             )
+        }
+
+        if (showHierarchyDialog) {
+            HierarchyViewDialog(
+                title = tree.title,
+                rootNode = currentRootNode,
+                onDismiss = { showHierarchyDialog = false }
+            )
+        }
+    }
+}
+
+// Flat item for the hierarchy view
+private data class HierarchyItem(
+    val node: PersonNode,
+    val depth: Int,
+    val isLastSibling: Boolean
+)
+
+private fun flattenHierarchy(node: PersonNode, depth: Int = 0): List<HierarchyItem> {
+    val result = mutableListOf<HierarchyItem>()
+    result.add(HierarchyItem(node, depth, false))
+    node.children.forEachIndexed { index, child ->
+        result.addAll(flattenHierarchy(child, depth + 1))
+    }
+    return result
+}
+
+@Composable
+fun HierarchyViewDialog(
+    title: String,
+    rootNode: PersonNode,
+    onDismiss: () -> Unit
+) {
+    val hierarchyList = remember(rootNode) { flattenHierarchy(rootNode) }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            shape = RoundedCornerShape(24.dp),
+            tonalElevation = 6.dp,
+            color = MaterialTheme.colorScheme.surface,
+            modifier = Modifier
+                .fillMaxWidth(0.92f)
+                .fillMaxHeight(0.85f)
+                .padding(vertical = 16.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(20.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Family Hierarchy",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = title,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.outline,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Default.Close, contentDescription = "Close")
+                    }
+                }
+
+                Spacer(Modifier.height(12.dp))
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                Spacer(Modifier.height(8.dp))
+
+                LazyColumn(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    contentPadding = PaddingValues(vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    items(hierarchyList) { item ->
+                        val themeColor = GenerationColors[item.depth % GenerationColors.size]
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(start = (item.depth * 20).dp, top = 2.dp, bottom = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            if (item.depth > 0) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.ArrowRight,
+                                    contentDescription = null,
+                                    tint = themeColor.copy(alpha = 0.8f),
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                            Surface(
+                                shape = CircleShape,
+                                color = themeColor.copy(alpha = 0.15f),
+                                modifier = Modifier.size(28.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = Icons.Default.Person,
+                                        contentDescription = null,
+                                        tint = themeColor,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                            }
+                            Spacer(Modifier.width(10.dp))
+                            Column {
+                                Text(
+                                    text = item.node.name,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = if (item.depth == 0) FontWeight.Bold else FontWeight.Medium
+                                )
+                                if (item.node.children.isNotEmpty()) {
+                                    Text(
+                                        text = "${item.node.children.size} children",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.outline
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(12.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    Button(
+                        onClick = onDismiss,
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Text("Done")
+                    }
+                }
+            }
         }
     }
 }
