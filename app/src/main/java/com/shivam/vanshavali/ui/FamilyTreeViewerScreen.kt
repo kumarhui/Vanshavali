@@ -1,18 +1,16 @@
 ﻿package com.shivam.vanshavali.ui
 
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.Paint
 import android.graphics.Typeface
-import android.os.Bundle
-import android.os.CancellationSignal
-import android.os.ParcelFileDescriptor
-import android.print.PageRange
-import android.print.PrintAttributes
-import android.print.PrintDocumentAdapter
-import android.print.PrintDocumentInfo
-import android.print.PrintManager
-import android.print.pdf.PrintedPdfDocument
+import android.net.Uri
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -25,10 +23,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.CenterFocusStrong
-import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.Print
-import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -38,6 +33,7 @@ import androidx.compose.ui.graphics.*
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
@@ -48,12 +44,18 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.core.content.FileProvider
 import com.shivam.vanshavali.model.PersonNode
 import com.shivam.vanshavali.model.SavedFamilyTree
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import java.io.File
 import java.io.FileOutputStream
+import java.io.OutputStream
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -89,7 +91,9 @@ fun FamilyTreeViewerScreen(
     BackHandler(onBack = onBack)
 
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val collapsedIds = remember { mutableStateMapOf<String, Boolean>() }
+    var selectedPersonId by remember { mutableStateOf<String?>(tree.root.id) }
 
     var scale by remember { mutableFloatStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
@@ -107,11 +111,11 @@ fun FamilyTreeViewerScreen(
         }
     }
 
-    val layoutRoot = remember(tree, collapsedIds.toMap()) {
-        buildBalancedTree(tree.root, collapsedIds)
+    val staticLayoutRoot = remember(tree) {
+        buildBalancedTree(tree.root)
     }
 
-    val treeBounds = remember(layoutRoot) { computeTreeBounds(layoutRoot) }
+    val treeBounds = remember(staticLayoutRoot) { computeTreeBounds(staticLayoutRoot) }
 
     fun fitTreeToScreen() {
         if (canvasSize.width > 0 && canvasSize.height > 0) {
@@ -127,7 +131,7 @@ fun FamilyTreeViewerScreen(
         }
     }
 
-    LaunchedEffect(canvasSize, layoutRoot) {
+    LaunchedEffect(canvasSize, staticLayoutRoot) {
         if (!hasAutoCentered && canvasSize.width > 0) {
             fitTreeToScreen()
             hasAutoCentered = true
@@ -152,12 +156,36 @@ fun FamilyTreeViewerScreen(
                     }
                 },
                 actions = {
-                    IconButton(onClick = { fitTreeToScreen() }) {
-                        Icon(Icons.Default.CenterFocusStrong, contentDescription = "Fit to Screen")
-                    }
-                    IconButton(onClick = { showMenu = !showMenu }) {
-                        Icon(Icons.Default.MoreVert, contentDescription = "Options")
-                    }
+                    ActionIconButtonWithTooltip(
+                        tooltipText = "Collapse Selected",
+                        icon = Icons.Default.UnfoldLess,
+                        enabled = selectedPersonId != null,
+                        onClick = {
+                            selectedPersonId?.let { id -> collapsedIds[id] = true }
+                        }
+                    )
+
+                    ActionIconButtonWithTooltip(
+                        tooltipText = "Expand Selected",
+                        icon = Icons.Default.UnfoldMore,
+                        enabled = selectedPersonId != null,
+                        onClick = {
+                            selectedPersonId?.let { id -> collapsedIds[id] = false }
+                        }
+                    )
+
+                    ActionIconButtonWithTooltip(
+                        tooltipText = "Fit to Screen",
+                        icon = Icons.Default.CenterFocusStrong,
+                        onClick = { fitTreeToScreen() }
+                    )
+
+                    ActionIconButtonWithTooltip(
+                        tooltipText = "Options",
+                        icon = Icons.Default.MoreVert,
+                        onClick = { showMenu = !showMenu }
+                    )
+
                     DropdownMenu(
                         expanded = showMenu,
                         onDismissRequest = { showMenu = false }
@@ -177,7 +205,17 @@ fun FamilyTreeViewerScreen(
                             }
                         )
                         DropdownMenuItem(
-                            text = { Text("Print / PDF") },
+                            text = { Text("Download JSON") },
+                            leadingIcon = { Icon(Icons.Default.Download, contentDescription = null) },
+                            onClick = {
+                                showMenu = false
+                                scope.launch {
+                                    downloadJsonFile(context, tree.title, Json { prettyPrint = true }.encodeToString(tree.root))
+                                }
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Print / Export") },
                             leadingIcon = { Icon(Icons.Default.Print, contentDescription = null) },
                             onClick = {
                                 showMenu = false
@@ -205,25 +243,30 @@ fun FamilyTreeViewerScreen(
                         isInteracting = true
                     }
                 }
-                .pointerInput(layoutRoot, scale, offset) {
+                .pointerInput(staticLayoutRoot, scale, offset) {
                     detectTapGestures { tapOffset ->
                         fun checkHit(node: RenderableNode): Boolean {
                             val screenCenterX = node.x * scale + offset.x
                             val screenCenterY = (node.y + CIRCLE_RADIUS) * scale + offset.y
-                            val hitRadius = (CIRCLE_RADIUS + 12f) * scale
+                            val hitRadius = (CIRCLE_RADIUS + 14f) * scale
 
                             val dx = tapOffset.x - screenCenterX
                             val dy = tapOffset.y - screenCenterY
                             if (dx * dx + dy * dy <= hitRadius * hitRadius) {
+                                selectedPersonId = node.node.id
                                 if (node.node.children.isNotEmpty()) {
                                     val isCollapsed = collapsedIds[node.node.id] == true
                                     collapsedIds[node.node.id] = !isCollapsed
                                 }
                                 return true
                             }
-                            return node.children.any { checkHit(it) }
+                            val isNodeCollapsed = collapsedIds[node.node.id] == true
+                            if (!isNodeCollapsed) {
+                                return node.children.any { checkHit(it) }
+                            }
+                            return false
                         }
-                        checkHit(layoutRoot)
+                        checkHit(staticLayoutRoot)
                     }
                 }
         ) {
@@ -232,11 +275,12 @@ fun FamilyTreeViewerScreen(
             Canvas(modifier = Modifier.fillMaxSize()) {
                 drawTreeOnCanvas(
                     scope = this,
-                    root = layoutRoot,
+                    root = staticLayoutRoot,
                     scale = scale,
                     offset = offset,
                     wireColor = wireColor,
-                    collapsedIds = collapsedIds
+                    collapsedIds = collapsedIds,
+                    selectedPersonId = selectedPersonId
                 )
             }
 
@@ -264,17 +308,41 @@ fun FamilyTreeViewerScreen(
         }
 
         if (showPrintDialog) {
-            val fullLayoutRoot = remember(tree) {
-                buildBalancedTree(tree.root, emptyMap())
-            }
-
             A4PrintPreviewDialog(
                 title = tree.title,
-                layoutRoot = fullLayoutRoot,
-                onDismiss = { showPrintDialog = false },
-                onPrint = {
-                    printFamilyTree(context, tree.title, fullLayoutRoot)
-                }
+                layoutRoot = staticLayoutRoot,
+                onDismiss = { showPrintDialog = false }
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ActionIconButtonWithTooltip(
+    tooltipText: String,
+    icon: ImageVector,
+    enabled: Boolean = true,
+    onClick: () -> Unit
+) {
+    val tooltipState = rememberTooltipState()
+    TooltipBox(
+        positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
+        tooltip = {
+            PlainTooltip {
+                Text(tooltipText)
+            }
+        },
+        state = tooltipState
+    ) {
+        IconButton(
+            onClick = onClick,
+            enabled = enabled
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = tooltipText,
+                tint = if (enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
             )
         }
     }
@@ -286,7 +354,8 @@ private fun drawTreeOnCanvas(
     scale: Float,
     offset: Offset,
     wireColor: Color,
-    collapsedIds: Map<String, Boolean>
+    collapsedIds: Map<String, Boolean>,
+    selectedPersonId: String?
 ) {
     val nativeCanvas = scope.drawContext.canvas.nativeCanvas
 
@@ -306,7 +375,8 @@ private fun drawTreeOnCanvas(
     }
 
     fun drawConnectors(parent: RenderableNode) {
-        if (parent.children.isNotEmpty()) {
+        val isCollapsed = collapsedIds[parent.node.id] == true
+        if (parent.children.isNotEmpty() && !isCollapsed) {
             val parentX = parent.x * scale + offset.x
             val parentBottomY = (parent.y + (CIRCLE_RADIUS * 2) + 20f) * scale + offset.y
             val busY = (parent.y + (CIRCLE_RADIUS * 2) + 36f) * scale + offset.y
@@ -365,6 +435,21 @@ private fun drawTreeOnCanvas(
         val r = CIRCLE_RADIUS * scale
         val themeColor = GenerationColors[node.depth % GenerationColors.size]
         val isCollapsed = collapsedIds[node.node.id] == true
+        val isSelected = node.node.id == selectedPersonId
+
+        if (isSelected) {
+            scope.drawCircle(
+                color = Color(0xFF2979FF).copy(alpha = 0.25f),
+                radius = r + (8f * scale),
+                center = Offset(cx, cy)
+            )
+            scope.drawCircle(
+                color = Color(0xFF2979FF),
+                radius = r + (5f * scale),
+                center = Offset(cx, cy),
+                style = Stroke(width = 2.2f * scale)
+            )
+        }
 
         scope.drawCircle(
             color = Color.White,
@@ -403,7 +488,9 @@ private fun drawTreeOnCanvas(
             }
         }
 
-        node.children.forEach { drawNodes(it) }
+        if (!isCollapsed) {
+            node.children.forEach { drawNodes(it) }
+        }
     }
     drawNodes(root)
 }
@@ -434,10 +521,12 @@ private fun computeTreeBounds(root: RenderableNode): TreeBounds {
 fun A4PrintPreviewDialog(
     title: String,
     layoutRoot: RenderableNode,
-    onDismiss: () -> Unit,
-    onPrint: () -> Unit
+    onDismiss: () -> Unit
 ) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val bounds = remember(layoutRoot) { computeTreeBounds(layoutRoot) }
+    var isLandscape by remember { mutableStateOf(true) }
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -448,9 +537,9 @@ fun A4PrintPreviewDialog(
             tonalElevation = 6.dp,
             color = MaterialTheme.colorScheme.surface,
             modifier = Modifier
-                .fillMaxWidth(0.95f)
-                .fillMaxHeight(0.92f)
-                .padding(vertical = 12.dp)
+                .fillMaxWidth(0.96f)
+                .fillMaxHeight(0.94f)
+                .padding(vertical = 10.dp)
         ) {
             Column(
                 modifier = Modifier
@@ -463,16 +552,32 @@ fun A4PrintPreviewDialog(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        text = "A4 Print Preview",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        text = "210 × 297 mm",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.outline
-                    )
+                    Column {
+                        Text(
+                            text = "Export & Print",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = if (isLandscape) "A4 Landscape (297 × 210 mm)" else "A4 Portrait (210 × 297 mm)",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.outline
+                        )
+                    }
+
+                    OutlinedButton(
+                        onClick = { isLandscape = !isLandscape },
+                        shape = RoundedCornerShape(10.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (isLandscape) Icons.Default.CropPortrait else Icons.Default.CropLandscape,
+                            contentDescription = "Change Layout",
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(if (isLandscape) "Portrait" else "Landscape")
+                    }
                 }
 
                 Spacer(Modifier.height(10.dp))
@@ -485,17 +590,19 @@ fun A4PrintPreviewDialog(
                         .padding(8.dp),
                     contentAlignment = Alignment.Center
                 ) {
+                    val aspectRatio = if (isLandscape) 1.414f / 1f else 1f / 1.414f
+
                     Surface(
                         color = Color.White,
                         shadowElevation = 4.dp,
                         modifier = Modifier
-                            .fillMaxHeight()
-                            .aspectRatio(1f / 1.414f)
+                            .fillMaxSize()
+                            .aspectRatio(aspectRatio, matchHeightConstraintsFirst = !isLandscape)
                     ) {
                         Canvas(modifier = Modifier.fillMaxSize()) {
                             val sheetW = size.width
                             val sheetH = size.height
-                            val margin = 20f
+                            val margin = 16f
                             val usableW = sheetW - (margin * 2)
                             val usableH = sheetH - (margin * 2)
 
@@ -511,30 +618,93 @@ fun A4PrintPreviewDialog(
                                 scale = autoScale,
                                 offset = Offset(offsetX, offsetY),
                                 wireColor = Color(0xFF546E7A),
-                                collapsedIds = emptyMap()
+                                collapsedIds = emptyMap(),
+                                selectedPersonId = null
                             )
                         }
                     }
                 }
 
-                Spacer(Modifier.height(14.dp))
+                Spacer(Modifier.height(12.dp))
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.End
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
                     TextButton(onClick = onDismiss) { Text("Cancel") }
-                    Spacer(Modifier.width(8.dp))
-                    Button(
-                        onClick = {
-                            onDismiss()
-                            onPrint()
-                        },
-                        shape = RoundedCornerShape(10.dp)
+
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(Icons.Default.Print, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Print / Save PDF")
+                        FilledTonalIconButton(
+                            onClick = {
+                                scope.launch {
+                                    val bmp = generateTreeBitmap(layoutRoot, bounds, isLandscape)
+                                    saveBitmapToGallery(context, title, bmp)
+                                }
+                            }
+                        ) {
+                            Icon(Icons.Default.Download, contentDescription = "Download Image")
+                        }
+
+                        FilledTonalIconButton(
+                            onClick = {
+                                scope.launch {
+                                    val bmp = generateTreeBitmap(layoutRoot, bounds, isLandscape)
+                                    val file = saveCacheBitmap(context, bmp, title)
+                                    val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+                                    val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                                        type = "image/png"
+                                        putExtra(Intent.EXTRA_STREAM, uri)
+                                        setPackage("com.whatsapp")
+                                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                    }
+                                    try {
+                                        context.startActivity(shareIntent)
+                                    } catch (_: Exception) {
+                                        shareIntent.setPackage("com.whatsapp.w4b")
+                                        try {
+                                            context.startActivity(shareIntent)
+                                        } catch (_: Exception) {
+                                            Toast.makeText(context, "WhatsApp not installed", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                }
+                            }
+                        ) {
+                            Icon(Icons.Default.Share, contentDescription = "WhatsApp Share")
+                        }
+
+                        FilledIconButton(
+                            onClick = {
+                                scope.launch {
+                                    val bmp = generateTreeBitmap(layoutRoot, bounds, isLandscape)
+                                    val file = saveCacheBitmap(context, bmp, title)
+                                    val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+                                    val printIntent = Intent(Intent.ACTION_SEND).apply {
+                                        type = "image/png"
+                                        putExtra(Intent.EXTRA_STREAM, uri)
+                                        setPackage("com.nokoprint")
+                                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                    }
+                                    try {
+                                        context.startActivity(printIntent)
+                                    } catch (_: Exception) {
+                                        printIntent.setPackage("com.noco.print")
+                                        try {
+                                            context.startActivity(printIntent)
+                                        } catch (_: Exception) {
+                                            Toast.makeText(context, "NokoPrint app not installed", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                }
+                            }
+                        ) {
+                            Icon(Icons.Default.Print, contentDescription = "Print Page")
+                        }
                     }
                 }
             }
@@ -542,94 +712,130 @@ fun A4PrintPreviewDialog(
     }
 }
 
-private fun printFamilyTree(context: Context, title: String, root: RenderableNode) {
-    val printManager = context.getSystemService(Context.PRINT_SERVICE) as? PrintManager ?: return
-    val jobName = "${title.replace("\\s+".toRegex(), "_")}_A4_Print"
+private suspend fun generateTreeBitmap(
+    root: RenderableNode,
+    bounds: TreeBounds,
+    isLandscape: Boolean
+): Bitmap = withContext(Dispatchers.Default) {
+    val width = if (isLandscape) 2480 else 1754
+    val height = if (isLandscape) 1754 else 2480
 
-    printManager.print(jobName, object : PrintDocumentAdapter() {
-        private var pdfDocument: PrintedPdfDocument? = null
+    val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+    val canvas = android.graphics.Canvas(bitmap)
+    canvas.drawColor(android.graphics.Color.WHITE)
 
-        override fun onLayout(
-            oldAttributes: PrintAttributes?,
-            newAttributes: PrintAttributes?,
-            cancellationSignal: CancellationSignal?,
-            callback: LayoutResultCallback?,
-            extras: Bundle?
-        ) {
-            pdfDocument = PrintedPdfDocument(context, newAttributes ?: return)
-            if (cancellationSignal?.isCanceled == true) {
-                callback?.onLayoutCancelled()
-                return
-            }
-            val info = PrintDocumentInfo.Builder(jobName)
-                .setContentType(PrintDocumentInfo.CONTENT_TYPE_DOCUMENT)
-                .setPageCount(1)
-                .build()
-            callback?.onLayoutFinished(info, true)
-        }
+    val margin = 80f
+    val usableW = width - (margin * 2)
+    val usableH = height - (margin * 2)
 
-        override fun onWrite(
-            pages: Array<out PageRange>?,
-            destination: ParcelFileDescriptor?,
-            cancellationSignal: CancellationSignal?,
-            callback: WriteResultCallback?
-        ) {
-            val page = pdfDocument?.startPage(0) ?: return
-            val pdfCanvas = page.canvas
+    val autoScale = min(usableW / max(bounds.width, 1f), usableH / max(bounds.height, 1f))
+    val fittedW = bounds.width * autoScale
+    val fittedH = bounds.height * autoScale
+    val offsetX = margin + ((usableW - fittedW) / 2f) - (bounds.minX * autoScale)
+    val offsetY = margin + ((usableH - fittedH) / 2f) - (bounds.minY * autoScale)
 
-            val bounds = computeTreeBounds(root)
-            val margin = 36f
-            val usableW = pdfCanvas.width - (margin * 2)
-            val usableH = pdfCanvas.height - (margin * 2)
+    val composeCanvas = Canvas(canvas)
+    val drawScope = androidx.compose.ui.graphics.drawscope.CanvasDrawScope()
+    drawScope.draw(
+        density = androidx.compose.ui.unit.Density(2f),
+        layoutDirection = androidx.compose.ui.unit.LayoutDirection.Ltr,
+        canvas = composeCanvas,
+        size = androidx.compose.ui.geometry.Size(width.toFloat(), height.toFloat())
+    ) {
+        drawTreeOnCanvas(
+            scope = this,
+            root = root,
+            scale = autoScale,
+            offset = Offset(offsetX, offsetY),
+            wireColor = Color(0xFF455A64),
+            collapsedIds = emptyMap(),
+            selectedPersonId = null
+        )
+    }
 
-            val autoScale = min(usableW / max(bounds.width, 1f), usableH / max(bounds.height, 1f))
-            val fittedW = bounds.width * autoScale
-            val fittedH = bounds.height * autoScale
-            val offsetX = margin + ((usableW - fittedW) / 2f) - (bounds.minX * autoScale)
-            val offsetY = margin + ((usableH - fittedH) / 2f) - (bounds.minY * autoScale)
-
-            val composeCanvas = Canvas(pdfCanvas)
-            val drawScope = androidx.compose.ui.graphics.drawscope.CanvasDrawScope()
-            drawScope.draw(
-                density = androidx.compose.ui.unit.Density(1f),
-                layoutDirection = androidx.compose.ui.unit.LayoutDirection.Ltr,
-                canvas = composeCanvas,
-                size = androidx.compose.ui.geometry.Size(pdfCanvas.width.toFloat(), pdfCanvas.height.toFloat())
-            ) {
-                drawTreeOnCanvas(
-                    scope = this,
-                    root = root,
-                    scale = autoScale,
-                    offset = Offset(offsetX, offsetY),
-                    wireColor = Color(0xFF455A64),
-                    collapsedIds = emptyMap()
-                )
-            }
-
-            pdfDocument?.finishPage(page)
-
-            try {
-                destination?.fileDescriptor?.let { fd ->
-                    FileOutputStream(fd).use { out ->
-                        pdfDocument?.writeTo(out)
-                    }
-                }
-                callback?.onWriteFinished(arrayOf(PageRange.ALL_PAGES))
-            } catch (e: Exception) {
-                callback?.onWriteFailed(e.localizedMessage)
-            } finally {
-                pdfDocument?.close()
-                pdfDocument = null
-            }
-        }
-    }, PrintAttributes.Builder()
-        .setMediaSize(PrintAttributes.MediaSize.ISO_A4)
-        .setColorMode(PrintAttributes.COLOR_MODE_COLOR)
-        .build()
-    )
+    bitmap
 }
 
-// ---------------- Buchheim-Walker Balanced Tree Layout Engine ----------------
+private suspend fun saveCacheBitmap(context: Context, bitmap: Bitmap, title: String): File = withContext(Dispatchers.IO) {
+    val cleanTitle = title.replace("\\s+".toRegex(), "_")
+    val file = File(context.cacheDir, "${cleanTitle}_print.png")
+    FileOutputStream(file).use { out ->
+        bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+    }
+    file
+}
+
+private suspend fun saveBitmapToGallery(context: Context, title: String, bitmap: Bitmap) = withContext(Dispatchers.IO) {
+    val filename = "${title.replace("\\s+".toRegex(), "_")}_${System.currentTimeMillis()}.png"
+    var outputStream: OutputStream? = null
+
+    try {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val contentValues = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, filename)
+                put(MediaStore.MediaColumns.MIME_TYPE, "image/png")
+                put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/Vanshavali")
+            }
+            val uri = context.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues)
+            if (uri != null) {
+                outputStream = context.contentResolver.openOutputStream(uri)
+            }
+        } else {
+            val imagesDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES).toString() + "/Vanshavali"
+            val dir = File(imagesDir).apply { mkdirs() }
+            val file = File(dir, filename)
+            outputStream = FileOutputStream(file)
+        }
+
+        outputStream?.use { out ->
+            bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+        }
+
+        withContext(Dispatchers.Main) {
+            Toast.makeText(context, "Image saved to Pictures/Vanshavali!", Toast.LENGTH_SHORT).show()
+        }
+    } catch (e: Exception) {
+        withContext(Dispatchers.Main) {
+            Toast.makeText(context, "Failed to save image: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
+        }
+    }
+}
+
+private suspend fun downloadJsonFile(context: Context, title: String, jsonContent: String) = withContext(Dispatchers.IO) {
+    val filename = "${title.replace("\\s+".toRegex(), "_")}_tree.json"
+    var outputStream: OutputStream? = null
+
+    try {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val contentValues = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, filename)
+                put(MediaStore.MediaColumns.MIME_TYPE, "application/json")
+                put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+            }
+            val uri = context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
+            if (uri != null) {
+                outputStream = context.contentResolver.openOutputStream(uri)
+            }
+        } else {
+            val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            val file = File(downloadsDir, filename)
+            outputStream = FileOutputStream(file)
+        }
+
+        outputStream?.use { out ->
+            out.write(jsonContent.toByteArray())
+        }
+
+        withContext(Dispatchers.Main) {
+            Toast.makeText(context, "JSON saved to Downloads/$filename", Toast.LENGTH_LONG).show()
+        }
+    } catch (e: Exception) {
+        withContext(Dispatchers.Main) {
+            Toast.makeText(context, "Failed to save JSON: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
+        }
+    }
+}
+
 private class BNode(
     val person: PersonNode,
     val depth: Int,
@@ -650,14 +856,10 @@ private class BNode(
     fun leftSibling(): BNode? = if (parent != null && number > 0) parent.children[number - 1] else null
 }
 
-private fun buildBalancedTree(
-    root: PersonNode,
-    collapsedMap: Map<String, Boolean>
-): RenderableNode {
+private fun buildBalancedTree(root: PersonNode): RenderableNode {
     fun createTree(person: PersonNode, depth: Int, parent: BNode?, index: Int): BNode {
         val bNode = BNode(person, depth, parent, index)
-        val isCollapsed = collapsedMap[person.id] == true
-        bNode.children = if (isCollapsed) emptyList() else person.children.mapIndexed { i, child ->
+        bNode.children = person.children.mapIndexed { i, child ->
             createTree(child, depth + 1, bNode, i)
         }
         return bNode
@@ -791,3 +993,4 @@ private fun secondWalkBW(v: BNode, m: Float) {
     v.x = v.prelim + m
     v.children.forEach { secondWalkBW(it, m + v.mod) }
 }
+
