@@ -1,6 +1,8 @@
 ﻿package com.shivam.vanshavali.ui
 
-import android.content.Intent
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
@@ -10,9 +12,8 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -43,13 +44,11 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
 
-// Calculates total depth of the tree
 private fun getMaxTreeDepth(node: PersonNode, currentDepth: Int = 0): Int {
     if (node.children.isEmpty()) return currentDepth
     return node.children.maxOf { getMaxTreeDepth(it, currentDepth + 1) }
 }
 
-// Expands nodes up to targetLevel and collapses deeper nodes
 private fun applyLevelExpansion(
     node: PersonNode,
     targetLevel: Int,
@@ -60,6 +59,15 @@ private fun applyLevelExpansion(
         collapsedMap[node.id] = currentDepth >= targetLevel
         node.children.forEach { child ->
             applyLevelExpansion(child, targetLevel, currentDepth + 1, collapsedMap)
+        }
+    }
+}
+
+private fun expandSingleLevelOnly(node: PersonNode, collapsedMap: MutableMap<String, Boolean>) {
+    collapsedMap[node.id] = false
+    node.children.forEach { child ->
+        if (child.children.isNotEmpty()) {
+            collapsedMap[child.id] = true
         }
     }
 }
@@ -77,17 +85,16 @@ fun FamilyTreeViewerScreen(
     val collapsedIds = remember { mutableStateMapOf<String, Boolean>() }
     var selectedPersonId by remember { mutableStateOf<String?>(tree.root.id) }
 
-    // Mode Toggle: Defaults to Hierarchy View
     var isHierarchyView by remember { mutableStateOf(true) }
-    var showLevelSelector by remember { mutableStateOf(false) }
+    var showLevelSlider by remember { mutableStateOf(false) }
 
     var currentRootNode by remember(tree) { mutableStateOf(tree.root) }
     var isHindiActive by remember { mutableStateOf(false) }
     var isTranslating by remember { mutableStateOf(false) }
 
-    val maxDepth = remember(currentRootNode) { getMaxTreeDepth(currentRootNode) }
+    val maxDepth = remember(currentRootNode) { max(1, getMaxTreeDepth(currentRootNode)) }
+    var currentDepthSliderValue by remember(maxDepth) { mutableFloatStateOf(maxDepth.toFloat()) }
 
-    // Canvas States
     var scale by remember { mutableFloatStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
     var isInteracting by remember { mutableStateOf(false) }
@@ -187,25 +194,14 @@ fun FamilyTreeViewerScreen(
                         onDismissRequest = { showMenu = false }
                     ) {
                         DropdownMenuItem(
-                            text = { Text(if (isHierarchyView) "View as Diagram" else "View as Hierarchy") },
-                            leadingIcon = { Icon(if (isHierarchyView) Icons.Default.AccountTree else Icons.Default.ViewList, contentDescription = null) },
+                            text = { Text("Copy JSON") },
+                            leadingIcon = { Icon(Icons.Default.ContentCopy, contentDescription = null) },
                             onClick = {
                                 showMenu = false
-                                isHierarchyView = !isHierarchyView
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Share JSON") },
-                            leadingIcon = { Icon(Icons.Default.Share, contentDescription = null) },
-                            onClick = {
-                                showMenu = false
-                                val json = Json { prettyPrint = true }
-                                val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                                    type = "text/plain"
-                                    putExtra(Intent.EXTRA_SUBJECT, tree.title)
-                                    putExtra(Intent.EXTRA_TEXT, "${tree.title}\n\n" + json.encodeToString(currentRootNode))
-                                }
-                                context.startActivity(Intent.createChooser(shareIntent, "Share Tree JSON"))
+                                val json = Json { prettyPrint = true }.encodeToString(currentRootNode)
+                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                clipboard.setPrimaryClip(ClipData.newPlainText("Family Tree JSON", json))
+                                Toast.makeText(context, "Tree JSON copied to clipboard!", Toast.LENGTH_SHORT).show()
                             }
                         )
                         DropdownMenuItem(
@@ -248,7 +244,11 @@ fun FamilyTreeViewerScreen(
                         selectedPersonId = clicked.id
                         if (clicked.children.isNotEmpty()) {
                             val isCollapsed = collapsedIds[clicked.id] == true
-                            collapsedIds[clicked.id] = !isCollapsed
+                            if (isCollapsed) {
+                                expandSingleLevelOnly(clicked, collapsedIds)
+                            } else {
+                                collapsedIds[clicked.id] = true
+                            }
                         }
                     },
                     onToggleCollapse = { id ->
@@ -282,7 +282,11 @@ fun FamilyTreeViewerScreen(
                                         selectedPersonId = node.node.id
                                         if (node.node.children.isNotEmpty()) {
                                             val isCollapsed = collapsedIds[node.node.id] == true
-                                            collapsedIds[node.node.id] = !isCollapsed
+                                            if (isCollapsed) {
+                                                expandSingleLevelOnly(node.node, collapsedIds)
+                                            } else {
+                                                collapsedIds[node.node.id] = true
+                                            }
                                         }
                                         return true
                                     }
@@ -355,16 +359,30 @@ fun FamilyTreeViewerScreen(
                 }
             }
 
+            // Outside scrim tap detection to dismiss the slider card
+            if (showLevelSlider) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .pointerInput(Unit) {
+                            detectTapGestures {
+                                showLevelSlider = false
+                            }
+                        }
+                )
+            }
+
             // Bottom Floating Controls Section
             Column(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(bottom = 16.dp),
+                    .padding(bottom = 16.dp)
+                    .fillMaxWidth(),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                // Level selector chips strip
+                // Interactive Depth Slider Card
                 AnimatedVisibility(
-                    visible = showLevelSelector,
+                    visible = showLevelSlider,
                     enter = fadeIn(),
                     exit = fadeOut()
                 ) {
@@ -374,58 +392,97 @@ fun FamilyTreeViewerScreen(
                         tonalElevation = 8.dp,
                         shadowElevation = 8.dp,
                         modifier = Modifier
-                            .padding(bottom = 8.dp)
-                            .widthIn(max = 380.dp)
+                            .padding(horizontal = 20.dp, vertical = 8.dp)
+                            .fillMaxWidth(0.92f)
+                            .pointerInput(Unit) {
+                                // Consumes taps inside the card so it does not trigger outside dismiss
+                                detectTapGestures { }
+                            }
                     ) {
-                        Row(
+                        Column(
                             modifier = Modifier
-                                .horizontalScroll(rememberScrollState())
-                                .padding(horizontal = 12.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                .fillMaxWidth()
+                                .padding(horizontal = 18.dp, vertical = 12.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
                         ) {
-                            Text(
-                                text = "Depth:",
-                                style = MaterialTheme.typography.labelMedium,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary
-                            )
+                            val activeLevel = currentDepthSliderValue.roundToInt()
 
-                            // Level 0 (Root Only)
-                            AssistChip(
-                                onClick = {
-                                    collapsedIds.clear()
-                                    applyLevelExpansion(currentRootNode, targetLevel = 0, currentDepth = 0, collapsedMap = collapsedIds)
-                                    showLevelSelector = false
-                                },
-                                label = { Text("Root") },
-                                shape = RoundedCornerShape(12.dp)
-                            )
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Tune,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Text(
+                                        text = "Generation Depth",
+                                        style = MaterialTheme.typography.labelLarge,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
 
-                            // Level 1 .. Max
-                            for (lvl in 1..maxDepth) {
-                                AssistChip(
-                                    onClick = {
-                                        collapsedIds.clear()
-                                        applyLevelExpansion(currentRootNode, targetLevel = lvl, currentDepth = 0, collapsedMap = collapsedIds)
-                                        showLevelSelector = false
-                                    },
-                                    label = { Text("L$lvl") },
-                                    shape = RoundedCornerShape(12.dp)
-                                )
+                                Surface(
+                                    shape = CircleShape,
+                                    color = MaterialTheme.colorScheme.primaryContainer,
+                                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                                ) {
+                                    Text(
+                                        text = when (activeLevel) {
+                                            0 -> "Root Only"
+                                            maxDepth -> "All ($activeLevel)"
+                                            else -> "Level $activeLevel"
+                                        },
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                                    )
+                                }
                             }
 
-                            // All Expanded
-                            FilledTonalButton(
-                                onClick = {
+                            Spacer(Modifier.height(4.dp))
+
+                            Slider(
+                                value = currentDepthSliderValue,
+                                onValueChange = { newValue ->
+                                    currentDepthSliderValue = newValue
+                                    val level = newValue.roundToInt()
                                     collapsedIds.clear()
-                                    showLevelSelector = false
+                                    if (level < maxDepth) {
+                                        applyLevelExpansion(
+                                            node = currentRootNode,
+                                            targetLevel = level,
+                                            currentDepth = 0,
+                                            collapsedMap = collapsedIds
+                                        )
+                                    }
                                 },
-                                shape = RoundedCornerShape(12.dp),
-                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                                modifier = Modifier.height(32.dp)
+                                valueRange = 0f..maxDepth.toFloat(),
+                                steps = max(0, maxDepth - 1),
+                                modifier = Modifier.fillMaxWidth()
+                            )
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                Text("All", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                Text(
+                                    text = "Root",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.outline
+                                )
+                                Text(
+                                    text = "Gen $maxDepth (All)",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.outline
+                                )
                             }
                         }
                     }
@@ -443,12 +500,20 @@ fun FamilyTreeViewerScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        // Level expansion toggle button
-                        ActionIconButtonWithTooltip(
-                            tooltipText = "Expand to Level (1, 2, 3...)",
-                            icon = Icons.Default.Layers,
-                            onClick = { showLevelSelector = !showLevelSelector }
-                        )
+                        FilledIconButton(
+                            onClick = { showLevelSlider = !showLevelSlider },
+                            colors = IconButtonDefaults.filledIconButtonColors(
+                                containerColor = if (showLevelSlider) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
+                                contentColor = if (showLevelSlider) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface
+                            ),
+                            modifier = Modifier.size(40.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Tune,
+                                contentDescription = "Depth Slider",
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
 
                         VerticalDivider(
                             modifier = Modifier
@@ -466,12 +531,14 @@ fun FamilyTreeViewerScreen(
                             }
                         )
 
+                        // Global Unfold All Icon
                         ActionIconButtonWithTooltip(
-                            tooltipText = "Expand Selected",
+                            tooltipText = "Unfold All Levels",
                             icon = Icons.Default.UnfoldMore,
-                            enabled = selectedPersonId != null,
                             onClick = {
-                                selectedPersonId?.let { id -> collapsedIds[id] = false }
+                                collapsedIds.clear()
+                                currentDepthSliderValue = maxDepth.toFloat()
+                                Toast.makeText(context, "Unfolded all levels", Toast.LENGTH_SHORT).show()
                             }
                         )
 
@@ -497,7 +564,10 @@ fun FamilyTreeViewerScreen(
         if (showPrintDialog) {
             A4PrintPreviewDialog(
                 title = tree.title,
+                rootNode = currentRootNode,
                 layoutRoot = staticLayoutRoot,
+                isHierarchyView = isHierarchyView,
+                collapsedIds = collapsedIds.toMap(),
                 onDismiss = { showPrintDialog = false }
             )
         }

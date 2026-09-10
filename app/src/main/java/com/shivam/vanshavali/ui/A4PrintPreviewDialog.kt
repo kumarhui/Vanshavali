@@ -17,6 +17,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.shivam.vanshavali.model.PersonNode
 import kotlinx.coroutines.launch
 import kotlin.math.max
 import kotlin.math.min
@@ -24,13 +25,17 @@ import kotlin.math.min
 @Composable
 fun A4PrintPreviewDialog(
     title: String,
+    rootNode: PersonNode,
     layoutRoot: RenderableNode,
+    isHierarchyView: Boolean,
+    collapsedIds: Map<String, Boolean>,
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val bounds = remember(layoutRoot) { computeTreeBounds(layoutRoot) }
-    var isLandscape by remember { mutableStateOf(true) }
+    // Hierarchy view is portrait-friendly by default; Diagram view is landscape-friendly
+    var isLandscape by remember { mutableStateOf(!isHierarchyView) }
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -58,7 +63,7 @@ fun A4PrintPreviewDialog(
                 ) {
                     Column {
                         Text(
-                            text = "Export & Print",
+                            text = if (isHierarchyView) "Print Hierarchy" else "Print Diagram",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold
                         )
@@ -104,27 +109,38 @@ fun A4PrintPreviewDialog(
                             .aspectRatio(aspectRatio, matchHeightConstraintsFirst = !isLandscape)
                     ) {
                         Canvas(modifier = Modifier.fillMaxSize()) {
-                            val sheetW = size.width
-                            val sheetH = size.height
-                            val margin = 16f
-                            val usableW = sheetW - (margin * 2)
-                            val usableH = sheetH - (margin * 2)
+                            if (isHierarchyView) {
+                                val visibleItems = getVisibleHierarchyList(rootNode, 0, collapsedIds)
+                                drawHierarchyOnCanvas(
+                                    scope = this,
+                                    title = title,
+                                    items = visibleItems,
+                                    scale = 1f,
+                                    offset = Offset(16f, 16f)
+                                )
+                            } else {
+                                val sheetW = size.width
+                                val sheetH = size.height
+                                val margin = 16f
+                                val usableW = sheetW - (margin * 2)
+                                val usableH = sheetH - (margin * 2)
 
-                            val autoScale = min(usableW / max(bounds.width, 1f), usableH / max(bounds.height, 1f))
-                            val fittedW = bounds.width * autoScale
-                            val fittedH = bounds.height * autoScale
-                            val offsetX = margin + ((usableW - fittedW) / 2f) - (bounds.minX * autoScale)
-                            val offsetY = margin + ((usableH - fittedH) / 2f) - (bounds.minY * autoScale)
+                                val autoScale = min(usableW / max(bounds.width, 1f), usableH / max(bounds.height, 1f))
+                                val fittedW = bounds.width * autoScale
+                                val fittedH = bounds.height * autoScale
+                                val offsetX = margin + ((usableW - fittedW) / 2f) - (bounds.minX * autoScale)
+                                val offsetY = margin + ((usableH - fittedH) / 2f) - (bounds.minY * autoScale)
 
-                            drawTreeOnCanvas(
-                                scope = this,
-                                root = layoutRoot,
-                                scale = autoScale,
-                                offset = Offset(offsetX, offsetY),
-                                wireColor = Color(0xFF546E7A),
-                                collapsedIds = emptyMap(),
-                                selectedPersonId = null
-                            )
+                                drawTreeOnCanvas(
+                                    scope = this,
+                                    root = layoutRoot,
+                                    scale = autoScale,
+                                    offset = Offset(offsetX, offsetY),
+                                    wireColor = Color(0xFF546E7A),
+                                    collapsedIds = collapsedIds,
+                                    selectedPersonId = null
+                                )
+                            }
                         }
                     }
                 }
@@ -145,7 +161,15 @@ fun A4PrintPreviewDialog(
                         FilledTonalIconButton(
                             onClick = {
                                 scope.launch {
-                                    val bmp = generateTreeBitmap(layoutRoot, bounds, isLandscape)
+                                    val bmp = generateTreeBitmap(
+                                        isHierarchyView = isHierarchyView,
+                                        title = title,
+                                        rootNode = rootNode,
+                                        layoutRoot = layoutRoot,
+                                        bounds = bounds,
+                                        collapsedIds = collapsedIds,
+                                        isLandscape = isLandscape
+                                    )
                                     TreeExportHelper.saveBitmapToGallery(context, title, bmp)
                                 }
                             }
@@ -156,7 +180,15 @@ fun A4PrintPreviewDialog(
                         FilledTonalIconButton(
                             onClick = {
                                 scope.launch {
-                                    val bmp = generateTreeBitmap(layoutRoot, bounds, isLandscape)
+                                    val bmp = generateTreeBitmap(
+                                        isHierarchyView = isHierarchyView,
+                                        title = title,
+                                        rootNode = rootNode,
+                                        layoutRoot = layoutRoot,
+                                        bounds = bounds,
+                                        collapsedIds = collapsedIds,
+                                        isLandscape = isLandscape
+                                    )
                                     val file = TreeExportHelper.saveCacheBitmap(context, bmp, title)
                                     TreeExportHelper.shareToWhatsApp(context, file)
                                 }
@@ -168,7 +200,15 @@ fun A4PrintPreviewDialog(
                         FilledIconButton(
                             onClick = {
                                 scope.launch {
-                                    val bmp = generateTreeBitmap(layoutRoot, bounds, isLandscape)
+                                    val bmp = generateTreeBitmap(
+                                        isHierarchyView = isHierarchyView,
+                                        title = title,
+                                        rootNode = rootNode,
+                                        layoutRoot = layoutRoot,
+                                        bounds = bounds,
+                                        collapsedIds = collapsedIds,
+                                        isLandscape = isLandscape
+                                    )
                                     val file = TreeExportHelper.saveCacheBitmap(context, bmp, title)
                                     TreeExportHelper.printWithNokoPrint(context, file)
                                 }

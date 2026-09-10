@@ -6,7 +6,15 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
 import com.google.android.play.core.appupdate.AppUpdateManager
 import com.google.android.play.core.appupdate.AppUpdateManagerFactory
 import com.google.android.play.core.appupdate.AppUpdateOptions
@@ -16,7 +24,11 @@ import com.shivam.vanshavali.data.TreeRepository
 import com.shivam.vanshavali.model.SavedFamilyTree
 import com.shivam.vanshavali.ui.FamilyTreeViewerScreen
 import com.shivam.vanshavali.ui.HomeScreen
+import com.shivam.vanshavali.ui.buildBalancedTree
 import com.shivam.vanshavali.ui.theme.VanshavaliTheme
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
     private val repository by lazy { TreeRepository(applicationContext) }
@@ -39,8 +51,10 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             VanshavaliTheme {
+                val scope = rememberCoroutineScope()
                 var currentTreeId by remember { mutableStateOf<String?>(null) }
                 var trees by remember { mutableStateOf(repository.getTrees()) }
+                var isLoadingTree by remember { mutableStateOf(false) }
 
                 val activeTree: SavedFamilyTree? = remember(currentTreeId, trees) {
                     currentTreeId?.let { id -> trees.find { it.id == id } }
@@ -54,7 +68,20 @@ class MainActivity : ComponentActivity() {
                 } else {
                     HomeScreen(
                         trees = trees,
-                        onTreeClick = { id -> currentTreeId = id },
+                        onTreeClick = { id ->
+                            val selected = trees.find { it.id == id }
+                            if (selected != null) {
+                                isLoadingTree = true
+                                scope.launch {
+                                    // Heavy calculation executed on background thread
+                                    withContext(Dispatchers.Default) {
+                                        buildBalancedTree(selected.root)
+                                    }
+                                    isLoadingTree = false
+                                    currentTreeId = id
+                                }
+                            }
+                        },
                         onAddTree = { title, json ->
                             val result = repository.saveTree(json, title)
                             result.onSuccess {
@@ -98,6 +125,41 @@ class MainActivity : ComponentActivity() {
                             checkForAppUpdates(silentCheck = false)
                         }
                     )
+                }
+
+                // Loading Progress Dialog
+                if (isLoadingTree) {
+                    Dialog(onDismissRequest = { /* Prevent dismiss while loading */ }) {
+                        Surface(
+                            shape = RoundedCornerShape(24.dp),
+                            color = MaterialTheme.colorScheme.surface,
+                            tonalElevation = 8.dp,
+                            shadowElevation = 12.dp
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 24.dp, vertical = 20.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(18.dp)
+                            ) {
+                                CircularProgressIndicator(
+                                    strokeWidth = 3.dp,
+                                    modifier = Modifier.size(32.dp)
+                                )
+                                Column {
+                                    Text(
+                                        text = "Loading Lineage...",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                    Text(
+                                        text = "Preparing tree layout",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.outline
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
